@@ -1,0 +1,34 @@
+# ── Whitelist: the repo ships only the native app and the README ──
+# Ignore everything at the root, then re-include what's needed to
+# build/run Chud. Local-only stuff (legacy Python app, design handoffs,
+# build artifacts, personal tools) never gets tracked.
+/*
+!/native/
+!/README.md
+!/.gitignore
+!/.gitattributes
+
+# ── Inside native/: build output + local-only files ──
+native/target/
+native/**/target/
+**/*.rs.bk
+native/ui/node_modules/
+native/src-tauri/gen/schemas/
+native/ui.hextech.bak/
+
+# Machine-specific cargo config (redirects target-dir off OneDrive)
+native/.cargo/
+
+# Dev-only helpers and internal notes (not needed to build or run)
+native/make_ico.py
+native/README.md
+native/ui/README.md
+
+# ── Editor / OS noise (applies everywhere) ──
+__pycache__/
+*.py[cod]
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,17 @@
+# Cargo workspace for Chud, the native League of Legends toolkit.
+# M0 contains only the Tauri shell crate; M1+ may split a `core` lib crate out.
+[workspace]
+resolver = "2"
+members = ["src-tauri"]
+
+# Release profile tuned for a small, fast single binary. Must live at the
+# workspace root — Cargo ignores profiles set in member crates.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+# NOTE: intentionally NOT `panic = "abort"`. The injection tools hold a keyboard
+# key down via SendInput; if a tool thread panics we want it to UNWIND so
+# `Injector::drop` runs and releases the key. `abort` would skip Drop and leave
+# the key stuck (feels like a hang). Unwinding keeps the rest of the app alive.

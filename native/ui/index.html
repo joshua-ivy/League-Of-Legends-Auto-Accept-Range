@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chud — League Tools</title>
+  <link rel="icon" type="image/png" href="icons/app.png" />
+  <link rel="stylesheet" href="styles/neon.css" />
+  <link rel="stylesheet" href="styles/profile.css" />
+</head>
+<body>
+  <div class="app-bg"></div>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <img class="brand-mark" src="icons/app.png" alt="Chud" />
+        <div class="col" style="gap:1px">
+          <span class="brand-title">Chud</span>
+          <span class="brand-sub">LEAGUE TOOLS</span>
+        </div>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="spacer"></div>
+      <span id="topClient" class="chip"></span>
+      <span id="topChip" class="chip"></span>
+      <button class="btn danger sm" id="stopAllTop" style="display:none">Stop All</button>
+      <button class="btn ghost sm" id="exitBtn" title="Exit"><span id="exitIco" style="display:inline-flex;width:15px;height:15px"></span></button>
+    </header>
+    <div class="content"><div class="content-inner fade-in" id="page"></div></div>
+  </div>
+
+  <div class="toast-wrap" id="toasts"></div>
+
+  <script src="src/profile.js"></script>
+  <script src="src/main.js"></script>
+</body>
+</html>
