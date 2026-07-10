@@ -178,6 +178,18 @@ Win32_System_Registry, Win32_Security. Relay worker: separate crate `relay-worke
 `worker` (workers-rs).
 
 ## 5. Milestones
+Status: S1 ✅ S2 ✅ (LCU+phase) S3 ✅ (injection+pengu) S3.1 ✅ (NtSuspend FFI, Fable)
+S8 ✅ (bundling+plugin rebrand) + relay worker ✅ deployed
+(`https://chud-party-relay.jivy26.workers.dev`). Remaining: S4 bridge, S5 game-flow,
+S6 party client, S7 downloads, S9 UI, S10 gate.
+
+Open reconciliation items (from S2/S3 agent notes, address before S10):
+- phase.rs: late-lock bootstrap on mid-ChampSelect start NOT ported; Swiftplay skips
+  champ-select reset not honored (game-mode detect runs after reset); no distinct
+  champion-exchange event (emits ChampionLocked). InjectionManager: `update_skin`
+  secondary entry not ported. GameMonitor auto-resume timeout defaults 60s — wire
+  config `monitor_auto_resume_timeout` at InjectionManager construction.
+
 - **S1 foundation**: paths/slog/config/state/special + Cargo deps + `skins::mod` skeleton — compiles.
 - **S2 LCU + phase**: lcu_ext, phase actor, ws fan-out — compiles + unit tests for map_cells/compute_locked.
 - **S3 injection**: injection/* + pengu.rs lifecycle.
