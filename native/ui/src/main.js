@@ -36,16 +36,10 @@ const MOCK_STATE = {
 let state = structuredClone(MOCK_STATE);
 let currentPage = "dashboard";
 
-async function invoke(cmd, args) {
-  if (TAURI) { try { return await TAURI.invoke(cmd, args); } catch (e) { console.warn(cmd, e); } }
-  return null;
-}
-
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const { esc, invoke } = window.ChudShared;
 
 const TONE = { success: "#33e0a0", running: "#33e0a0", ice: "#35e4ff", info: "#35e4ff", gold: "#7ceeff", warning: "#e6a23c", danger: "#ff5470", neutral: "#6b6b96" };
 const toneColor = (t) => TONE[t] || TONE.neutral;
-const chip = (text, tone) => { const c = toneColor(tone); return `<span class="chip" style="color:${c};border-color:${c}55;background:${c}18">${esc(text)}</span>`; };
 
 // ── Glyphs (inline SVG so they inherit currentColor) ────────────────────────
 const GLYPH_NAMES = ["dashboard", "profile", "settings", "activity", "diagnostics", "power", "bolt", "crosshair", "camera", "lock", "warning", "ping", "refresh", "copy", "chevron", "shield"];
@@ -337,7 +331,7 @@ async function renderDiagnostics() {
     const btn = document.getElementById("diagCopy");
     try { await navigator.clipboard.writeText(JSON.stringify(d, null, 2)); btn.querySelector("svg") ? btn.lastChild.textContent = "Copied!" : (btn.textContent = "Copied!"); }
     catch { btn.textContent = "Copy failed"; }
-    setTimeout(() => renderDiagnostics(), 1400);
+    setTimeout(() => { if (currentPage === "diagnostics") renderDiagnostics(); }, 1400);
   };
   document.getElementById("diagCapture").onclick = async () => {
     const out = document.getElementById("diagCaptureOut");

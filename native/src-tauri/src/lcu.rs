@@ -74,16 +74,16 @@ pub fn find_auth() -> Option<Auth> {
 static AUTH_CACHE: std::sync::Mutex<Option<Auth>> = std::sync::Mutex::new(None);
 
 pub fn cached_auth() -> Option<Auth> {
-    if let Some(a) = AUTH_CACHE.lock().unwrap().clone() {
+    if let Some(a) = AUTH_CACHE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return Some(a);
     }
     let found = find_auth();
-    *AUTH_CACHE.lock().unwrap() = found.clone();
+    *AUTH_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = found.clone();
     found
 }
 
 pub fn invalidate_auth() {
-    *AUTH_CACHE.lock().unwrap() = None;
+    *AUTH_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 pub fn build_client(timeout_secs: f64) -> reqwest::Client {
@@ -92,6 +92,14 @@ pub fn build_client(timeout_secs: f64) -> reqwest::Client {
         .timeout(Duration::from_secs_f64(timeout_secs.max(0.5)))
         .build()
         .expect("failed to build reqwest client")
+}
+
+/// Shared client for LCU asset proxying: one connection pool / TLS setup
+/// reused across all `lcu://` scheme requests instead of a fresh client per
+/// image (the Profile view can fetch 100+ icons in a burst).
+pub fn asset_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| build_client(5.0))
 }
 
 pub async fn get_phase(client: &reqwest::Client, auth: &Auth) -> Option<String> {

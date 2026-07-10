@@ -56,8 +56,8 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
             None => {
                 state.client_online.store(false, Ordering::SeqCst);
                 emit_state(&app, &state);
-                sleep_interruptible(&state, generation, backoff(retry_delay, errors, max_backoff)).await;
                 errors = errors.saturating_add(1);
+                sleep_interruptible(&state, generation, backoff(retry_delay, errors, max_backoff)).await;
             }
             Some(a) => match lcu::get_phase(&client, &a).await {
                 Some(phase) => {
@@ -74,7 +74,7 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
                         let ws_state = state.clone();
                         let ws_auth = a.clone();
                         tauri::async_runtime::spawn(async move {
-                            lcu_ws::run(ws_app, ws_state.clone(), ws_auth).await;
+                            lcu_ws::run(ws_app, ws_state.clone(), ws_auth, generation).await;
                             ws_state.ws_active.store(false, Ordering::SeqCst);
                         });
                     }

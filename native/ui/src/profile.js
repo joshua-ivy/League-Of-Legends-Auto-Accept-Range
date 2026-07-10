@@ -5,9 +5,8 @@
 // images 404 and fall back to a letter tile — layout still renders from mock.
 
 (function () {
-  const TAURI = window.__TAURI__?.core;
-  const inv = async (cmd, args) => (TAURI ? TAURI.invoke(cmd, args).catch(() => null) : null);
-  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const esc = window.ChudShared.esc;
+  const inv = window.ChudShared.invoke;
 
   // LCU asset proxy URLs (numeric ids).
   const asset = (kind, id, ext = "png") => (id ? `http://lcu.localhost/${kind}/${id}.${ext}` : null);
@@ -207,6 +206,7 @@
     return `<div class="content-inner profile fade-in"><div class="hx" style="margin-top:14px;text-align:center;padding:48px 24px">
       <div style="font-family:var(--font-display);font-size:18px;color:var(--gold-bright)">No profile yet</div>
       <div class="dim" style="margin-top:6px">Start the League client and log in — your summoner, rank, and match history will appear here.</div>
+      <div style="margin-top:16px"><span class="refresh" id="pfEmptyRefresh" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-secondary);padding:5px 11px;border-radius:var(--r-sm);border:1px solid var(--glass-border)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 0-2.6 5.9"/><path d="M20 6v5h-5"/></svg>Check again</span></div>
     </div></div>`;
   }
 
@@ -223,11 +223,18 @@
   }
 
   async function render(el, force) {
-    if (!current || force) {
+    if (!current || force || current.clientOnline === false) {
       const data = await inv("get_profile");
-      current = data || MOCK_PROFILE; // browser preview falls back to mock
+      // Real backend: an offline/failed fetch stays an offline state (retried
+      // on every visit); mock data is for the browser preview only.
+      current = data || (window.ChudShared.hasBackend ? { clientOnline: false } : MOCK_PROFILE);
     }
-    if (!current || current.clientOnline === false) { el.innerHTML = emptyState(); return; }
+    if (!current || current.clientOnline === false) {
+      el.innerHTML = emptyState();
+      const r = el.querySelector("#pfEmptyRefresh");
+      if (r) r.onclick = () => render(el, true);
+      return;
+    }
     el.innerHTML = profileHtml(current);
     wire(el, current);
   }

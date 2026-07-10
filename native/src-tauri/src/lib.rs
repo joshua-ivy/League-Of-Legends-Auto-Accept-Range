@@ -171,7 +171,7 @@ async fn fetch_lcu_asset(path: &str) -> tauri::http::Response<Vec<u8>> {
     use tauri::http::Response;
     let blank = || Response::builder().status(404).body(Vec::new()).unwrap_or_else(|_| Response::new(Vec::new()));
     let Some(auth) = lcu::cached_auth() else { return blank() };
-    let client = lcu::build_client(5.0);
+    let client = lcu::asset_client();
     // Accept two URL forms:
     //   * a full LCU asset path ("lol-game-data/...") — for item/spell icons whose
     //     iconPath lives outside the v1 tree (e.g. .../ASSETS/Items/Icons2D/...);
@@ -182,7 +182,7 @@ async fn fetch_lcu_asset(path: &str) -> tauri::http::Response<Vec<u8>> {
     } else {
         format!("/lol-game-data/assets/v1/{trimmed}")
     };
-    match lcu::get_bytes(&client, &auth, &endpoint).await {
+    match lcu::get_bytes(client, &auth, &endpoint).await {
         Some((bytes, ct)) => Response::builder()
             .header("Content-Type", ct)
             .header("Access-Control-Allow-Origin", "*")

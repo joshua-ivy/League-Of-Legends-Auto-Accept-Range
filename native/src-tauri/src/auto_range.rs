@@ -40,7 +40,17 @@ pub fn start(app: AppHandle, state: Arc<AppState>, generation: u64) {
 /// tick. The hook therefore only touches lock-free atomics.
 pub(crate) fn start_chat_listener(state: Arc<AppState>) {
     std::thread::spawn(move || {
+        // Windows key auto-repeat delivers repeated KeyPress(Return) events to
+        // the hook while Enter is held down, which would otherwise toggle
+        // chat_open on every repeat instead of once per press. Track the
+        // down/up edge so only the first press of a hold toggles.
+        let enter_down = std::cell::Cell::new(false);
         let callback = move |event: rdev::Event| {
+            // Handled before the active gate so a release while disarmed is
+            // never missed (which would otherwise wedge the edge "down").
+            if let rdev::EventType::KeyRelease(rdev::Key::Return) = event.event_type {
+                enter_down.set(false);
+            }
             // Only react while an injection tool that cares about chat is armed.
             let active = state.auto_range_running.load(Ordering::SeqCst)
                 || state.camera_running.load(Ordering::SeqCst);
@@ -49,11 +59,14 @@ pub(crate) fn start_chat_listener(state: Arc<AppState>) {
             }
             match event.event_type {
                 rdev::EventType::KeyPress(rdev::Key::Return) => {
-                    // Atomic read only — no Win32 in the hook (see doc above).
-                    if state.game_focused.load(Ordering::SeqCst) {
-                        let now = state.chat_open.load(Ordering::SeqCst);
-                        state.chat_open.store(!now, Ordering::SeqCst);
+                    if !enter_down.get() {
+                        // Atomic read only — no Win32 in the hook (see doc above).
+                        if state.game_focused.load(Ordering::SeqCst) {
+                            let now = state.chat_open.load(Ordering::SeqCst);
+                            state.chat_open.store(!now, Ordering::SeqCst);
+                        }
                     }
+                    enter_down.set(true);
                 }
                 rdev::EventType::KeyPress(rdev::Key::Escape) => {
                     state.chat_open.store(false, Ordering::SeqCst);

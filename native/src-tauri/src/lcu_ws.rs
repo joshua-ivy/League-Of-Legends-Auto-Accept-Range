@@ -7,6 +7,10 @@
 //! Lifecycle: `auto_accept::run` owns a spawn slot (`AppState::ws_active`).
 //! This task clears the slot when it returns, so the poller respawns it on its
 //! next tick — connection drops and client restarts self-heal at poll cadence.
+//! It also carries the poller's `generation`: a superseded task (rapid
+//! off→on toggle bumped `auto_accept_gen` past it) exits on its next loop
+//! check instead of running on — and possibly racing its replacement — with
+//! stale auth.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -24,11 +28,11 @@ use crate::{emit_state, lcu, AppState, LockExt};
 /// WAMP subscribe opcode 5; event frames arrive as opcode 8.
 const PHASE_EVENT: &str = "OnJsonApiEvent_lol-gameflow_v1_gameflow-phase";
 
-pub async fn run(app: AppHandle, state: Arc<AppState>, auth: lcu::Auth) {
-    stream_events(&app, &state, &auth).await;
+pub async fn run(app: AppHandle, state: Arc<AppState>, auth: lcu::Auth, generation: u64) {
+    stream_events(&app, &state, &auth, generation).await;
 }
 
-async fn stream_events(app: &AppHandle, state: &Arc<AppState>, auth: &lcu::Auth) -> Option<()> {
+async fn stream_events(app: &AppHandle, state: &Arc<AppState>, auth: &lcu::Auth, generation: u64) -> Option<()> {
     let url = auth.base_url.replacen("https", "wss", 1);
     let mut request = url.into_client_request().ok()?;
     request
@@ -57,7 +61,7 @@ async fn stream_events(app: &AppHandle, state: &Arc<AppState>, auth: &lcu::Auth)
     let timeout = state.config.lock_safe().lcu.request_timeout;
     let client = lcu::build_client(timeout);
 
-    while state.running.load(Ordering::SeqCst) {
+    while state.running.load(Ordering::SeqCst) && state.auto_accept_gen.load(Ordering::SeqCst) == generation {
         // Bounded wait so a "stop" toggle is honored within ~1s even when the
         // socket is silent (which is most of the time).
         let msg = match tokio::time::timeout(Duration::from_secs(1), ws.next()).await {

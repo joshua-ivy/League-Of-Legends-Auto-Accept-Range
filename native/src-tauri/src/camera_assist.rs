@@ -53,6 +53,7 @@ fn recenter_loop(app: AppHandle, state: Arc<AppState>, generation: u64) {
     let mut last_seen = Instant::now() - Duration::from_secs(10);
     let mut next_recenter = Instant::now();
     let mut tracked: Option<(i32, i32)> = None;
+    let mut capturer = vision::Capturer::new();
 
     while state.camera_running.load(Ordering::SeqCst)
         && state.camera_gen.load(Ordering::SeqCst) == generation
@@ -89,7 +90,7 @@ fn recenter_loop(app: AppHandle, state: Arc<AppState>, generation: u64) {
             continue;
         }
 
-        if let Some(frame) = vision::capture_primary() {
+        if let Some(frame) = capturer.capture() {
             let (w, h) = (frame.width() as i32, frame.height() as i32);
             let center = vision::expected_player_anchor(w, h);
             let tracking_anchor = match tracked {

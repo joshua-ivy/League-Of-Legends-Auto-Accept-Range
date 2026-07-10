@@ -23,18 +23,19 @@ mod imp {
         })
     }
 
-    /// Resolve a config key name to (virtual key, scancode). Falls back to 'c'
-    /// (the default range key) for anything unresolvable.
-    pub fn resolve(name: &str) -> (u16, u16) {
+    /// Resolve a config key name to (virtual key, scancode). Returns `None`
+    /// when the name is neither a known named key nor a single resolvable
+    /// character — callers treat that as a disarm (see `Injector::new`)
+    /// rather than silently remapping to some default key.
+    pub fn resolve(name: &str) -> Option<(u16, u16)> {
         let normalized = name.trim().to_lowercase();
         let vk = named_vk(&normalized).or_else(|| {
             let ch = normalized.chars().next().filter(|_| normalized.chars().count() == 1)?;
             let scan_result = unsafe { VkKeyScanW(ch as u16) };
             (scan_result != -1).then_some((scan_result & 0xFF) as u16)
-        });
-        let vk = vk.unwrap_or(0x43); // 'C'
+        })?;
         let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
-        (vk, scan)
+        Some((vk, scan))
     }
 
     fn key_input(vk: u16, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
@@ -67,8 +68,8 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    pub fn resolve(_name: &str) -> (u16, u16) {
-        (0, 0)
+    pub fn resolve(_name: &str) -> Option<(u16, u16)> {
+        Some((0, 0))
     }
     pub fn transition(_vk: u16, _scan: u16, _up: bool) {}
 }
@@ -81,8 +82,7 @@ pub struct Injector {
 
 impl Injector {
     pub fn new(key_name: &str) -> Option<Self> {
-        let (vk, scan) = imp::resolve(key_name);
-        Some(Self { vk, scan, holding: false })
+        imp::resolve(key_name).map(|(vk, scan)| Self { vk, scan, holding: false })
     }
 
     pub fn press(&mut self) {

@@ -12,9 +12,33 @@ use image::RgbaImage;
 /// Capture the primary monitor as an RGBA image. `None` if no monitor / capture
 /// failed (e.g. headless).
 pub fn capture_primary() -> Option<RgbaImage> {
-    let monitors = xcap::Monitor::all().ok()?;
-    let monitor = monitors.into_iter().next()?;
-    monitor.capture_image().ok()
+    Capturer::new().capture()
+}
+
+/// Primary-monitor capturer that caches the monitor handle across frames
+/// (re-enumerating monitors every tick is needless OS overhead at ~12 Hz).
+/// The cache is dropped on a failed capture so display changes self-heal.
+pub struct Capturer {
+    monitor: Option<xcap::Monitor>,
+}
+
+impl Capturer {
+    pub fn new() -> Self {
+        Self { monitor: None }
+    }
+
+    pub fn capture(&mut self) -> Option<RgbaImage> {
+        if self.monitor.is_none() {
+            self.monitor = Some(xcap::Monitor::all().ok()?.into_iter().next()?);
+        }
+        match self.monitor.as_ref().unwrap().capture_image().ok() {
+            Some(img) => Some(img),
+            None => {
+                self.monitor = None;
+                None
+            }
+        }
+    }
 }
 
 /// Expected on-screen player anchor (screen center, nudged down) — where the
@@ -119,6 +143,12 @@ struct Group {
     rows: i32,
 }
 
+thread_local! {
+    /// Reused green/blue mask buffers — avoids ~4 MB of fresh allocation per
+    /// frame at 1080p in the Camera Assist hot loop.
+    static MASKS: std::cell::RefCell<(Vec<bool>, Vec<bool>)> = std::cell::RefCell::new((Vec::new(), Vec::new()));
+}
+
 /// Detect candidate player health-bars (faithful port of
 /// `cameraassist.py::detect_player_candidates`).
 pub fn detect_player_candidates(frame: &RgbaImage) -> Vec<PlayerCandidate> {
@@ -126,133 +156,135 @@ pub fn detect_player_candidates(frame: &RgbaImage) -> Vec<PlayerCandidate> {
     let h = frame.height() as i32;
     let buf = frame.as_raw(); // RGBA8
 
-    let mut green = vec![false; (w * h) as usize];
-    let mut blue = vec![false; (w * h) as usize];
-    for i in 0..(w * h) as usize {
-        let r = buf[i * 4] as i32;
-        let g = buf[i * 4 + 1] as i32;
-        let b = buf[i * 4 + 2] as i32;
-        green[i] = g >= 118
-            && b <= 150
-            && g >= r - 22
-            && (g - b) >= 34
-            && (r <= 190 || (g - r) >= 18);
-        blue[i] = b >= 105 && g >= 55 && r <= 130 && (b - r) >= 32;
-    }
+    MASKS.with_borrow_mut(|(green, blue)| {
+        green.resize((w * h) as usize, false);
+        blue.resize((w * h) as usize, false);
+        for i in 0..(w * h) as usize {
+            let r = buf[i * 4] as i32;
+            let g = buf[i * 4 + 1] as i32;
+            let b = buf[i * 4 + 2] as i32;
+            green[i] = g >= 118
+                && b <= 150
+                && g >= r - 22
+                && (g - b) >= 34
+                && (r <= 190 || (g - r) >= 18);
+            blue[i] = b >= 105 && g >= 55 && r <= 130 && (b - r) >= 32;
+        }
 
-    let mut active: Vec<Group> = Vec::new();
-    let mut finished: Vec<Group> = Vec::new();
+        let mut active: Vec<Group> = Vec::new();
+        let mut finished: Vec<Group> = Vec::new();
 
-    for y in 0..h {
-        // Run-length green segments in this row, filtered by width + region.
-        let mut segments: Vec<(i32, i32)> = Vec::new();
-        let mut x = 0;
-        while x < w {
-            if green[(y * w + x) as usize] {
-                let start = x;
-                while x < w && green[(y * w + x) as usize] {
+        for y in 0..h {
+            // Run-length green segments in this row, filtered by width + region.
+            let mut segments: Vec<(i32, i32)> = Vec::new();
+            let mut x = 0;
+            while x < w {
+                if green[(y * w + x) as usize] {
+                    let start = x;
+                    while x < w && green[(y * w + x) as usize] {
+                        x += 1;
+                    }
+                    let end = x - 1;
+                    let seg_w = end - start + 1;
+                    if seg_w >= BAR_MIN_WIDTH && seg_w <= BAR_MAX_WIDTH {
+                        let cx = (start + end) / 2;
+                        if gameplay_region_ok(cx, y, w, h) {
+                            segments.push((start, end));
+                        }
+                    }
+                } else {
                     x += 1;
                 }
-                let end = x - 1;
-                let seg_w = end - start + 1;
-                if seg_w >= BAR_MIN_WIDTH && seg_w <= BAR_MAX_WIDTH {
-                    let cx = (start + end) / 2;
-                    if gameplay_region_ok(cx, y, w, h) {
-                        segments.push((start, end));
+            }
+
+            let mut matched = vec![false; active.len()];
+            for seg in &segments {
+                let mut best: i32 = -1;
+                let mut best_overlap = 0.0_f64;
+                for (gi, g) in active.iter().enumerate() {
+                    if y - g.last_y > 1 {
+                        continue;
+                    }
+                    let overlap = (seg.1.min(g.last_end) - seg.0.max(g.last_start) + 1).max(0);
+                    let min_w = (seg.1 - seg.0 + 1).min(g.last_end - g.last_start + 1);
+                    let ratio = overlap as f64 / (min_w.max(1) as f64);
+                    if ratio > 0.45 && ratio > best_overlap {
+                        best = gi as i32;
+                        best_overlap = ratio;
                     }
                 }
-            } else {
-                x += 1;
-            }
-        }
-
-        let mut matched = vec![false; active.len()];
-        for seg in &segments {
-            let mut best: i32 = -1;
-            let mut best_overlap = 0.0_f64;
-            for (gi, g) in active.iter().enumerate() {
-                if y - g.last_y > 1 {
-                    continue;
+                if best >= 0 {
+                    let g = &mut active[best as usize];
+                    g.min_x = g.min_x.min(seg.0);
+                    g.max_x = g.max_x.max(seg.1);
+                    g.min_y = g.min_y.min(y);
+                    g.max_y = g.max_y.max(y);
+                    g.last_y = y;
+                    g.last_start = seg.0;
+                    g.last_end = seg.1;
+                    g.widths.push(seg.1 - seg.0 + 1);
+                    g.rows += 1;
+                    matched[best as usize] = true;
+                } else {
+                    active.push(Group {
+                        min_x: seg.0,
+                        max_x: seg.1,
+                        min_y: y,
+                        max_y: y,
+                        last_y: y,
+                        last_start: seg.0,
+                        last_end: seg.1,
+                        widths: vec![seg.1 - seg.0 + 1],
+                        rows: 1,
+                    });
+                    matched.push(true);
                 }
-                let overlap = (seg.1.min(g.last_end) - seg.0.max(g.last_start) + 1).max(0);
-                let min_w = (seg.1 - seg.0 + 1).min(g.last_end - g.last_start + 1);
-                let ratio = overlap as f64 / (min_w.max(1) as f64);
-                if ratio > 0.45 && ratio > best_overlap {
-                    best = gi as i32;
-                    best_overlap = ratio;
+            }
+
+            // Retire groups not seen for >1 row and not touched this row.
+            let mut still: Vec<Group> = Vec::with_capacity(active.len());
+            for (gi, g) in active.into_iter().enumerate() {
+                if g.last_y < y - 1 && !matched.get(gi).copied().unwrap_or(false) {
+                    finished.push(g);
+                } else {
+                    still.push(g);
                 }
             }
-            if best >= 0 {
-                let g = &mut active[best as usize];
-                g.min_x = g.min_x.min(seg.0);
-                g.max_x = g.max_x.max(seg.1);
-                g.min_y = g.min_y.min(y);
-                g.max_y = g.max_y.max(y);
-                g.last_y = y;
-                g.last_start = seg.0;
-                g.last_end = seg.1;
-                g.widths.push(seg.1 - seg.0 + 1);
-                g.rows += 1;
-                matched[best as usize] = true;
-            } else {
-                active.push(Group {
-                    min_x: seg.0,
-                    max_x: seg.1,
-                    min_y: y,
-                    max_y: y,
-                    last_y: y,
-                    last_start: seg.0,
-                    last_end: seg.1,
-                    widths: vec![seg.1 - seg.0 + 1],
-                    rows: 1,
-                });
-                matched.push(true);
-            }
+            active = still;
         }
+        finished.extend(active);
 
-        // Retire groups not seen for >1 row and not touched this row.
-        let mut still: Vec<Group> = Vec::with_capacity(active.len());
-        for (gi, g) in active.into_iter().enumerate() {
-            if g.last_y < y - 1 && !matched.get(gi).copied().unwrap_or(false) {
-                finished.push(g);
-            } else {
-                still.push(g);
+        let mut candidates = Vec::new();
+        for mut g in finished {
+            let group_height = g.max_y - g.min_y + 1;
+            let group_width = median(&mut g.widths);
+            if g.rows < 2 || group_height < BAR_MIN_HEIGHT || group_height > BAR_MAX_HEIGHT {
+                continue;
             }
+            let (left, top, right, bottom) = (g.min_x, g.min_y, g.max_x, g.max_y);
+            let cx = (left + right) / 2;
+            let cy = (top + bottom) / 2;
+            if !gameplay_region_ok(cx, cy, w, h) {
+                continue;
+            }
+            let mana = blue_bonus(blue, w, h, left, right, bottom);
+            let width_score = 1.0 - (group_width - 112).abs() as f64 / (BAR_MAX_WIDTH.max(1) as f64);
+            let height_score = (g.rows as f64 / BAR_MAX_HEIGHT.max(1) as f64).min(1.0);
+            let confidence = width_score.max(0.0) + height_score + mana;
+            candidates.push(PlayerCandidate {
+                bar_box: (left, top, right, bottom),
+                player_anchor: (
+                    clamp_i(cx, 0, w - 1),
+                    clamp_i(bottom + HEALTHBAR_TO_PLAYER_OFFSET_Y, 0, h - 1),
+                ),
+                width: group_width,
+                height: group_height,
+                confidence,
+                mana_bonus: mana,
+            });
         }
-        active = still;
-    }
-    finished.extend(active);
-
-    let mut candidates = Vec::new();
-    for mut g in finished {
-        let group_height = g.max_y - g.min_y + 1;
-        let group_width = median(&mut g.widths);
-        if g.rows < 2 || group_height < BAR_MIN_HEIGHT || group_height > BAR_MAX_HEIGHT {
-            continue;
-        }
-        let (left, top, right, bottom) = (g.min_x, g.min_y, g.max_x, g.max_y);
-        let cx = (left + right) / 2;
-        let cy = (top + bottom) / 2;
-        if !gameplay_region_ok(cx, cy, w, h) {
-            continue;
-        }
-        let mana = blue_bonus(&blue, w, h, left, right, bottom);
-        let width_score = 1.0 - (group_width - 112).abs() as f64 / (BAR_MAX_WIDTH.max(1) as f64);
-        let height_score = (g.rows as f64 / BAR_MAX_HEIGHT.max(1) as f64).min(1.0);
-        let confidence = width_score.max(0.0) + height_score + mana;
-        candidates.push(PlayerCandidate {
-            bar_box: (left, top, right, bottom),
-            player_anchor: (
-                clamp_i(cx, 0, w - 1),
-                clamp_i(bottom + HEALTHBAR_TO_PLAYER_OFFSET_Y, 0, h - 1),
-            ),
-            width: group_width,
-            height: group_height,
-            confidence,
-            mana_bonus: mana,
-        });
-    }
-    candidates
+        candidates
+    })
 }
 
 /// Pick the best candidate, biased toward the tracked/expected anchor (faithful
