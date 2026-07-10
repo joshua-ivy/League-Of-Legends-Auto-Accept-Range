@@ -1,156 +1,290 @@
-//! Game process suspend/resume monitor — INTERFACE STUB (S3). The Python
-//! original (`injection\game\game_monitor.py::GameMonitor`) suspends
-//! `League of Legends.exe` moments after it launches during champion
-//! select, so cslol's overlay can hook in before the game finishes loading
-//! assets, then resumes it the instant `runoverlay` starts (see
-//! `overlay::mk_run_overlay`).
+//! Game process suspend/resume monitor (ported from
+//! `injection\game\game_monitor.py::GameMonitor`).
 //!
-//! DEFERRED TO THE LEAD (S3.1): the actual suspend/resume FFI
-//! (`NtSuspendProcess`/`NtResumeProcess`, undocumented `ntdll.dll` exports)
-//! needs a `windows` crate surface not in the currently-declared feature
-//! list (`Win32_System_Threading` has `SuspendThread`/`ResumeThread` per
-//! *thread*, not the whole-process `Nt*SuspendProcess` pair the Python
-//! original used, and
-//! the safe `windows` crate doesn't expose `ntdll.dll` exports via a
-//! documented module — this likely wants either a manually-declared
-//! `#[link(name = "ntdll")] extern "system"` block, or `GetProcAddress`
-//! against `ntdll.dll` at runtime). Every method below is a documented
-//! no-op/log stub that compiles and satisfies the interface `overlay.rs`
-//! and `mod.rs` (`InjectionManager`) already call against; the lead fills in
-//! the bodies mechanically per the doc comments.
+//! During champion select the Riot client launches `League of Legends.exe`
+//! early; this monitor suspends it the moment it appears so cslol's overlay
+//! can hook file I/O before the game finishes loading assets, then resumes it
+//! the instant `runoverlay` starts (see `overlay::mk_run_overlay`).
+//!
+//! Suspension uses the undocumented whole-process `NtSuspendProcess` /
+//! `NtResumeProcess` `ntdll` exports (the safe `windows` crate exposes only
+//! per-*thread* `SuspendThread`/`ResumeThread`). This is the single most
+//! safety-critical operation in the app: a suspended game that never resumes
+//! freezes the user's client forever, so resume is defended four ways —
+//! (1) the unconditional auto-resume timeout in the watcher loop,
+//! (2) `resume()`/`resume_if_suspended()`/`stop()` all resume a still-held
+//! process, (3) the resume handle is stored so resuming never depends on
+//! re-finding the process, and (4) a `Drop` guard resumes on teardown.
 
-#![allow(dead_code)] // consumed by S3+ (injector/overlay wiring); FFI bodies land in S3.1
+#![allow(dead_code)] // some entry points are consumed by S5 (trigger) wiring
 
-use std::time::Instant;
+use std::ffi::c_void;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
-use crate::skins::slog::log_info;
+use sysinfo::{ProcessesToUpdate, System};
+use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE};
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_SUSPEND_RESUME};
 
-/// Monitors and controls `League of Legends.exe` process suspension/resume
-/// (ported from `GameMonitor`). Field shapes mirror the Python instance
-/// attributes 1:1 so the lead's FFI fill-in is mechanical.
-pub struct GameMonitor {
-    /// True while the background monitor loop should keep running (Python's
-    /// `self._monitor_active`).
-    monitor_active: bool,
-    /// PID of the game process we suspended, if any (Python's
-    /// `self._suspended_game_process`, minus the `psutil.Process` wrapper —
-    /// S3.1 will likely also want a stored process `HANDLE` here for
-    /// `NtResumeProcess`, since a PID alone isn't enough to resume via the
-    /// native API without re-opening a handle on every call).
-    suspended_pid: Option<u32>,
-    /// Wall-clock instant the suspension started, for the auto-resume
-    /// safety timeout (Python's `suspension_start_time`, a local variable
-    /// inside the `game_monitor()` thread body — hoisted to a field here
-    /// since Rust has no closure-captured mutable local shared across polls
-    /// the way the Python thread body did).
+use crate::skins::slog::{log_error, log_info};
+
+// Undocumented `ntdll` whole-process suspend/resume. Linked directly against
+// `ntdll.lib` (always present in the Windows SDK). `NTSTATUS` return: 0
+// (`STATUS_SUCCESS`) means the call succeeded.
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtSuspendProcess(process_handle: HANDLE) -> i32;
+    fn NtResumeProcess(process_handle: HANDLE) -> i32;
+}
+
+const GAME_EXE_NAME: &str = "league of legends.exe";
+/// Steady-state poll while hunting for the game process
+/// (`PERSISTENT_MONITOR_CHECK_INTERVAL_S`).
+const HUNT_INTERVAL: Duration = Duration::from_millis(50);
+/// Steady-state poll once suspended, just waiting for `runoverlay`
+/// (`PERSISTENT_MONITOR_IDLE_INTERVAL_S`).
+const IDLE_INTERVAL: Duration = Duration::from_millis(100);
+/// Rapid startup checks to catch the game the moment it launches (the client
+/// can spawn it before `start()` is even called).
+const RAPID_CHECKS: u32 = 10;
+const RAPID_INTERVAL: Duration = Duration::from_millis(5);
+const RESUME_MAX_ATTEMPTS: u32 = 3; // GAME_RESUME_MAX_ATTEMPTS
+const RESUME_VERIFY_WAIT: Duration = Duration::from_millis(100); // GAME_RESUME_VERIFICATION_WAIT_S
+const DEFAULT_AUTO_RESUME_SECS: f64 = 60.0;
+
+/// Reconstruct a `HANDLE` from the `isize` we store (raw `HANDLE` is a
+/// non-`Send` pointer; the integer form crosses the thread boundary safely).
+#[inline]
+fn handle_from(raw: isize) -> HANDLE {
+    HANDLE(raw as *mut c_void)
+}
+
+/// Open the game process for suspend/resume; `None` on access-denied (usually
+/// "not elevated") or if the process vanished.
+fn open_game(pid: u32) -> Option<isize> {
+    unsafe {
+        match OpenProcess(PROCESS_SUSPEND_RESUME, BOOL(0), pid) {
+            Ok(h) if !h.is_invalid() => Some(h.0 as isize),
+            _ => None,
+        }
+    }
+}
+
+/// Suspend the whole process. Returns true on `STATUS_SUCCESS`.
+fn suspend(raw: isize) -> bool {
+    unsafe { NtSuspendProcess(handle_from(raw)) == 0 }
+}
+
+/// Resume the whole process, retrying like the Python original (the status
+/// read races the resume itself, so we call unconditionally rather than trust
+/// a "looks running" check). Always closes the handle afterward.
+fn resume_and_close(raw: isize) {
+    for attempt in 1..=RESUME_MAX_ATTEMPTS {
+        let ok = unsafe { NtResumeProcess(handle_from(raw)) == 0 };
+        if ok {
+            break;
+        }
+        log_error!("[monitor] NtResumeProcess attempt {attempt}/{RESUME_MAX_ATTEMPTS} failed");
+        thread::sleep(RESUME_VERIFY_WAIT);
+    }
+    unsafe {
+        let _ = CloseHandle(handle_from(raw));
+    }
+}
+
+struct MonitorState {
+    /// The watcher loop runs while this is true.
+    active: bool,
+    /// (pid, open handle as isize) of the suspended game, if any.
+    suspended: Option<(u32, isize)>,
+    /// When the current suspension began (for the auto-resume timeout).
     suspension_start: Option<Instant>,
-    /// Set once `resume()` has been called for this session, so the
-    /// monitor loop (S3.1) stops suspending anything further even if it's
-    /// still polling (Python's `self._runoverlay_started`).
+    /// Set once resume has been requested; the watcher stops suspending after.
     runoverlay_started: bool,
+    /// Unconditional safety net: resume no matter what after this long.
+    auto_resume: Duration,
+}
+
+impl MonitorState {
+    fn new() -> Self {
+        Self {
+            active: false,
+            suspended: None,
+            suspension_start: None,
+            runoverlay_started: false,
+            auto_resume: Duration::from_secs_f64(DEFAULT_AUTO_RESUME_SECS),
+        }
+    }
+
+    /// Resume the held process (if any) and clear suspension bookkeeping.
+    /// Safe to call repeatedly.
+    fn resume_held(&mut self) {
+        if let Some((pid, raw)) = self.suspended.take() {
+            resume_and_close(raw);
+            log_info!("[monitor] Resumed game pid={pid}");
+        }
+        self.suspension_start = None;
+    }
+}
+
+/// Monitors and controls `League of Legends.exe` suspension. Public methods
+/// keep the `&mut self` shape the injection pipeline calls against; the shared
+/// state lets the background watcher thread coordinate with them.
+pub struct GameMonitor {
+    state: Arc<Mutex<MonitorState>>,
+    watcher: Option<JoinHandle<()>>,
 }
 
 impl GameMonitor {
     pub fn new() -> Self {
-        Self { monitor_active: false, suspended_pid: None, suspension_start: None, runoverlay_started: false }
+        Self { state: Arc::new(Mutex::new(MonitorState::new())), watcher: None }
     }
 
-    /// Start watching for `League of Legends.exe` and suspend it the moment
-    /// it appears (ported from `GameMonitor.start`). Stops any existing
-    /// monitor first, exactly like the Python original.
-    ///
-    /// DEFERRED FFI (S3.1) — exact behavior to reproduce from the Python original:
-    /// 1. Spawn a background loop (Python: a daemon thread; either a
-    ///    `std::thread` or a blocking tokio task is fine — this struct
-    ///    doesn't dictate it).
-    /// 2. On start, do 10 rapid immediate checks of the process table (via
-    ///    `sysinfo`, ~5ms apart) to catch the game as soon as it launches —
-    ///    the client can spawn it before this method is even called.
-    /// 3. The moment `League of Legends.exe` is found and not already
-    ///    suspended, call `NtSuspendProcess` on its handle; record
-    ///    `suspended_pid` + `suspension_start = Instant::now()`.
-    /// 4. If the process is found already suspended (race with a previous
-    ///    session), just track it — don't double-suspend.
-    /// 5. After the immediate checks, fall into the steady-state poll loop:
-    ///    `PERSISTENT_MONITOR_CHECK_INTERVAL_S` (50ms) while hunting for the
-    ///    process, `PERSISTENT_MONITOR_IDLE_INTERVAL_S` (100ms) once
-    ///    suspended and just waiting for `runoverlay` to hook in.
-    /// 6. Every iteration while suspended, compare
-    ///    `suspension_start.elapsed()` against the configured auto-resume
-    ///    timeout (`monitor_auto_resume_timeout` config value, clamped
-    ///    1.0..=180.0s, default 60s) — this is the UNCONDITIONAL safety net:
-    ///    if injection stalls for any reason, resume anyway rather than
-    ///    freeze the client's game forever.
-    /// 7. `AccessDenied` opening the process (non-admin) must stop the
-    ///    monitor and surface a clear "run as administrator" error — don't
-    ///    retry forever.
+    /// Override the auto-resume safety timeout (config `monitor_auto_resume_timeout`,
+    /// clamped 1..=180s). Takes effect on the next `start()`.
+    pub fn set_auto_resume_timeout(&mut self, secs: f64) {
+        let clamped = secs.clamp(1.0, 180.0);
+        self.state.lock_safe().auto_resume = Duration::from_secs_f64(clamped);
+    }
+
+    /// Start watching for the game and suspend it the moment it appears.
+    /// Stops any prior watcher first, exactly like the Python original.
     pub fn start(&mut self) {
         self.stop();
-        self.monitor_active = true;
-        self.runoverlay_started = false;
-        log_info!("[monitor] GameMonitor::start (stub — NtSuspendProcess deferred to S3.1)");
+        {
+            let mut st = self.state.lock_safe();
+            st.active = true;
+            st.runoverlay_started = false;
+            st.suspended = None;
+            st.suspension_start = None;
+        }
+        let state = Arc::clone(&self.state);
+        self.watcher = Some(thread::spawn(move || watcher_loop(state)));
+        log_info!("[monitor] GameMonitor armed");
     }
 
-    /// Resume the suspended game (called the instant `runoverlay` starts —
-    /// see `overlay::mk_run_overlay`). Ported from `GameMonitor.resume_game`.
-    /// Sets the "runoverlay started" flag UNCONDITIONALLY first, exactly
-    /// like the Python original, so the monitor loop stops suspending
-    /// anything even if the resume itself fails below.
-    ///
-    /// DEFERRED FFI (S3.1): call `NtResumeProcess` on the suspended handle,
-    /// retrying up to `GAME_RESUME_MAX_ATTEMPTS` (3) with
-    /// `GAME_RESUME_VERIFICATION_WAIT_S` (0.1s) between attempts — the
-    /// Python original always calls resume even when the reported status already looks
-    /// "running" (the status check races the resume itself, so it's safer
-    /// to call unconditionally than to trust the status read). Must clear
-    /// `suspended_pid`/`suspension_start` and stop the monitor loop
-    /// afterwards regardless of whether the resume actually verified —
-    /// this is the UNCONDITIONAL auto-resume safety behavior: never leave
-    /// the struct believing a process is still suspended once resume has
-    /// been attempted.
+    /// Resume the suspended game (called the instant `runoverlay` starts).
+    /// Sets `runoverlay_started` unconditionally first — like the Python
+    /// original — so the watcher stops suspending even if resume fails.
     pub fn resume(&mut self) {
-        self.runoverlay_started = true;
-        log_info!("[monitor] GameMonitor::resume (stub — NtResumeProcess deferred to S3.1)");
-        self.suspended_pid = None;
-        self.suspension_start = None;
-        self.monitor_active = false;
+        {
+            let mut st = self.state.lock_safe();
+            st.runoverlay_started = true;
+            st.resume_held();
+            st.active = false;
+        }
+        self.join_watcher();
     }
 
-    /// Resume the game only if the monitor actually suspended it, then stop
-    /// the monitor (ported from `GameMonitor.resume_if_suspended` — used
-    /// when injection is skipped, e.g. a base skin was selected, so we
-    /// never leave the game frozen waiting for an injection that isn't
-    /// coming).
+    /// Resume only if we actually suspended something, then stop (used when
+    /// injection is skipped, e.g. a base skin — never leave the game frozen
+    /// waiting for an injection that isn't coming).
     pub fn resume_if_suspended(&mut self) {
-        if self.suspended_pid.is_some() {
+        let held = self.state.lock_safe().suspended.is_some();
+        if held {
             log_info!("[INJECT] Injection skipped - resuming suspended game");
             self.resume();
+        } else {
+            self.stop();
         }
-        self.stop();
     }
 
-    /// True while the monitor is armed/suspending (ported from
-    /// `GameMonitor.is_active`).
+    /// True while the watcher is armed.
     pub fn is_active(&self) -> bool {
-        self.monitor_active
+        self.state.lock_safe().active
     }
 
-    /// Stop the monitor, resuming the game first if it's still suspended
-    /// (ported from `GameMonitor.stop`). `InjectionManager::_stop_monitor`
-    /// calls this directly (not just through `resume()`) after every
-    /// injection attempt, successful or not.
-    ///
-    /// DEFERRED FFI (S3.1): if `suspended_pid` is still set here, that means
-    /// `resume()` was never called for this session (e.g. injection bailed
-    /// out before reaching `runoverlay`) — call `NtResumeProcess` here too
-    /// before clearing state, or the game stays frozen forever.
+    /// Stop the watcher, resuming the game first if it's still suspended
+    /// (`InjectionManager` calls this after every injection attempt).
     pub fn stop(&mut self) {
-        if self.monitor_active && self.suspended_pid.is_some() {
-            log_info!("[monitor] Stopping with a still-suspended PID (stub — NtResumeProcess deferred to S3.1)");
+        {
+            let mut st = self.state.lock_safe();
+            // If a process is still held here, resume() was never reached
+            // (injection bailed before runoverlay) — resume it, or the game
+            // stays frozen forever.
+            st.resume_held();
+            st.active = false;
         }
-        self.monitor_active = false;
-        self.suspended_pid = None;
-        self.suspension_start = None;
+        self.join_watcher();
+    }
+
+    fn join_watcher(&mut self) {
+        if let Some(h) = self.watcher.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// Background watcher: rapid startup checks, then steady-state polling, with
+/// the unconditional auto-resume timeout enforced every iteration.
+fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
+    let mut sys = System::new();
+    let mut checks_done = 0u32;
+
+    loop {
+        {
+            let st = state.lock_safe();
+            if !st.active || st.runoverlay_started {
+                break;
+            }
+        }
+
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        let game_pid = sys
+            .processes()
+            .values()
+            .find(|p| p.name().to_string_lossy().to_lowercase() == GAME_EXE_NAME)
+            .map(|p| p.pid().as_u32());
+
+        let mut interval = if checks_done < RAPID_CHECKS { RAPID_INTERVAL } else { HUNT_INTERVAL };
+        checks_done = checks_done.saturating_add(1);
+
+        {
+            let mut st = state.lock_safe();
+            if !st.active || st.runoverlay_started {
+                break;
+            }
+            match (game_pid, st.suspended.is_some()) {
+                (Some(pid), false) => {
+                    // Found it and we haven't suspended anything yet.
+                    if let Some(raw) = open_game(pid) {
+                        if suspend(raw) {
+                            st.suspended = Some((pid, raw));
+                            st.suspension_start = Some(Instant::now());
+                            interval = IDLE_INTERVAL;
+                            log_info!("[monitor] Suspended game pid={pid}");
+                        } else {
+                            unsafe {
+                                let _ = CloseHandle(handle_from(raw));
+                            }
+                            log_error!("[monitor] NtSuspendProcess failed for pid={pid}");
+                        }
+                    } else {
+                        // Access denied usually means not elevated — retrying
+                        // forever won't help; surface and stop.
+                        log_error!("[monitor] Cannot open game pid={pid} (run as administrator?) - stopping monitor");
+                        st.active = false;
+                        break;
+                    }
+                }
+                (_, true) => {
+                    // Already suspended — just enforce the safety timeout.
+                    interval = IDLE_INTERVAL;
+                    if let Some(started) = st.suspension_start {
+                        if started.elapsed() >= st.auto_resume {
+                            log_error!("[monitor] Auto-resume timeout hit - resuming game unconditionally");
+                            st.resume_held();
+                            st.active = false;
+                            break;
+                        }
+                    }
+                }
+                (None, false) => {} // still hunting
+            }
+        }
+
+        thread::sleep(interval);
     }
 }
 
@@ -160,12 +294,35 @@ impl Default for GameMonitor {
     }
 }
 
+/// Teardown safety net: never let a dropped monitor leave the game frozen.
+impl Drop for GameMonitor {
+    fn drop(&mut self) {
+        {
+            let mut st = self.state.lock_safe();
+            st.active = false;
+            st.resume_held();
+        }
+        self.join_watcher();
+    }
+}
+
+/// Poison-tolerant lock: a panic while suspended must not make every later
+/// resume attempt panic too and strand the game.
+trait LockSafe<T> {
+    fn lock_safe(&self) -> std::sync::MutexGuard<'_, T>;
+}
+impl<T> LockSafe<T> for Mutex<T> {
+    fn lock_safe(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn resume_always_clears_suspended_state_even_with_nothing_suspended() {
+    fn resume_clears_state_even_with_nothing_suspended() {
         let mut m = GameMonitor::new();
         assert!(!m.is_active());
         m.start();
@@ -175,9 +332,18 @@ mod tests {
     }
 
     #[test]
-    fn resume_if_suspended_is_a_noop_when_nothing_was_suspended() {
+    fn resume_if_suspended_is_noop_when_nothing_suspended() {
         let mut m = GameMonitor::new();
-        m.resume_if_suspended(); // must not panic
+        m.resume_if_suspended();
         assert!(!m.is_active());
+    }
+
+    #[test]
+    fn auto_resume_timeout_clamps() {
+        let mut m = GameMonitor::new();
+        m.set_auto_resume_timeout(9999.0);
+        assert_eq!(m.state.lock_safe().auto_resume, Duration::from_secs(180));
+        m.set_auto_resume_timeout(0.01);
+        assert_eq!(m.state.lock_safe().auto_resume, Duration::from_secs(1));
     }
 }
