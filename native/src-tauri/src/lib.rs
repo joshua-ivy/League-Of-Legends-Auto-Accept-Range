@@ -15,6 +15,7 @@ mod lcu;
 mod lcu_ws;
 mod profile;
 mod safety;
+mod skins;
 mod stats;
 mod vision;
 mod winutil;
@@ -451,6 +452,13 @@ fn capture_debug_frame() -> serde_json::Value {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Skins subsystem foundation (data-dir tree + file logger). Non-fatal:
+    // the rest of the app must come up even if this fails (e.g. a locked-down
+    // profile) — the skins tools just stay unavailable this session.
+    if let Err(e) = skins::init() {
+        eprintln!("skins::init failed (continuing without skins subsystem): {e}");
+    }
+
     let config = Config::load();
     let mut stats = Stats::load();
     stats.start_session();
