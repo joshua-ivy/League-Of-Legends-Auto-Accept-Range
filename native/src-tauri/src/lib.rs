@@ -66,6 +66,10 @@ pub struct AppState {
     /// see `skins::bridge::broadcast`. `None` only in the brief window
     /// before `setup()` spawns it.
     pub skins_bridge: Mutex<Option<skins::bridge::BridgeHandle>>,
+    /// The injection manager (S3), set once during `setup()`. S5's ticker /
+    /// trigger pull it from here (via the app handle) to run an injection at
+    /// the loadout deadline. `None` only before `setup()` builds it.
+    pub skins_injection: Mutex<Option<Arc<skins::injection::InjectionManager>>>,
 }
 
 /// Mutex helper that ignores poisoning. A panic while holding a lock must not
@@ -497,6 +501,7 @@ pub fn run() {
         skins: Arc::new(skins::SkinsState::new()),
         skins_phase: Mutex::new(None),
         skins_bridge: Mutex::new(None),
+        skins_injection: Mutex::new(None),
     });
 
     tauri::Builder::default()
@@ -563,9 +568,16 @@ pub fn run() {
                 skins::paths::skins_dir(),
                 skins::paths::injection_overlay_dir(),
             ));
-            let bridge_handle =
-                skins::bridge::spawn(handle.clone(), st.skins.clone(), injection_manager, &phase_handle);
+            let bridge_handle = skins::bridge::spawn(
+                handle.clone(),
+                st.skins.clone(),
+                injection_manager.clone(),
+                &phase_handle,
+            );
             *st.skins_bridge.lock_safe() = Some(bridge_handle);
+            // Stash the injection manager so S5's ticker/trigger can pull it
+            // from the app handle at the loadout deadline.
+            *st.skins_injection.lock_safe() = Some(injection_manager);
 
             *st.skins_phase.lock_safe() = Some(phase_handle);
 
