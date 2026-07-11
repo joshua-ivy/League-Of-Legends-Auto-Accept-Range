@@ -21,12 +21,27 @@
       </div>
       <nav class="nav" id="nav"></nav>
       <div class="spacer"></div>
+      <button id="updatePill" class="update-pill" style="display:none"></button>
       <span id="topClient" class="chip"></span>
       <span id="topChip" class="chip"></span>
       <button class="btn danger sm" id="stopAllTop" style="display:none">Stop All</button>
       <button class="btn ghost sm" id="exitBtn" title="Exit"><span id="exitIco" style="display:inline-flex;width:15px;height:15px"></span></button>
     </header>
     <div class="content"><div class="content-inner fade-in" id="page"></div></div>
+  </div>
+
+  <div class="update-overlay" id="updateOverlay" style="display:none">
+    <div class="update-card">
+      <img class="update-mark" src="icons/app.png" alt="Chud" />
+      <div class="update-title" id="updateTitle">Update available</div>
+      <div class="update-sub" id="updateSub"></div>
+      <div class="update-track"><div class="update-bar" id="updateBar"></div></div>
+      <div class="update-pct" id="updatePct"></div>
+      <div class="update-actions" id="updateActions">
+        <button class="btn ghost sm" id="updateLater">Later</button>
+        <button class="btn primary sm" id="updateNow">Update &amp; restart</button>
+      </div>
+    </div>
   </div>
 
   <div class="toast-wrap" id="toasts"></div>

@@ -2,7 +2,7 @@
  * @name Chud-CustomWheel
  * @author Chud Team
  * @description Custom mod wheel for Pengu Loader - displays installed mods for hovered skins
- * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
+ * @link https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range
  */
 (function createCustomWheel() {
   const LOG_PREFIX = "[CHUD-CustomWheel]";

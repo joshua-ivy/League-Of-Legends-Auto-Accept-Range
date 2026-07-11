@@ -11,14 +11,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range/releases/latest"><b>⬇️ Download the latest installer</b></a>
+  <a href="https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range/releases/latest"><b>⬇️ Download the latest installer</b></a>
 </p>
 
 ---
 
 ## ⚡ Quick start
 
-1. **[Download the installer](https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range/releases/latest)** (`Chud_x.y.z_x64-setup.exe`) and run it. It installs for your user only — no admin install needed.
+1. **[Download the installer](https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range/releases/latest)** (`Chud_x.y.z_x64-setup.exe`) and run it. It installs for your user only — no admin install needed.
 2. Launch **Chud**, and start League. Chud finds your client automatically.
 3. That's it. From now on Chud **updates itself** — every new version installs quietly on the next launch. No reinstalling, no re-downloading.
 

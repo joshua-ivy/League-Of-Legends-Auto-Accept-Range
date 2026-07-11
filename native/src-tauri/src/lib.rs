@@ -707,32 +707,90 @@ fn skins_party_get_state(state: tauri::State<Arc<AppState>>) -> serde_json::Valu
     }
 }
 
-/// Silently check GitHub Releases for a signed newer version, install it, and
-/// relaunch. Best-effort — any error just logs and the current version keeps
-/// running. This is what lets users stop swapping the exe by hand.
-async fn run_startup_update(app: AppHandle) {
+/// Update metadata surfaced to the UI so it can show a themed "update
+/// available" pill instead of a forced silent restart. See `updater_install`.
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    version: String,
+    notes: String,
+}
+
+/// On startup, check GitHub Releases for a signed newer version and, if one
+/// exists, emit `update-available` to the UI. We deliberately do NOT auto-
+/// install on launch anymore — the user clicks the in-app pill to update on
+/// their own schedule, so relaunching mid-game never forces downtime.
+/// Best-effort: any failure just logs and the current version keeps running.
+async fn run_startup_update_check(app: AppHandle) {
     use tauri_plugin_updater::UpdaterExt;
-    let updater = match app.updater() {
-        Ok(u) => u,
-        Err(e) => {
-            eprintln!("[update] updater unavailable: {e}");
-            return;
-        }
+    let Ok(updater) = app.updater() else {
+        eprintln!("[update] updater unavailable");
+        return;
     };
     match updater.check().await {
         Ok(Some(update)) => {
-            eprintln!("[update] newer version {} found - installing", update.version);
-            match update.download_and_install(|_downloaded, _total| {}, || {}).await {
-                Ok(()) => {
-                    eprintln!("[update] installed - relaunching");
-                    app.restart();
-                }
-                Err(e) => eprintln!("[update] install failed: {e}"),
-            }
+            eprintln!("[update] newer version {} available", update.version);
+            let _ = app.emit(
+                "update-available",
+                json!({ "version": update.version, "notes": update.body.clone().unwrap_or_default() }),
+            );
         }
         Ok(None) => eprintln!("[update] already up to date"),
         Err(e) => eprintln!("[update] check failed: {e}"),
     }
+}
+
+/// UI-driven update check (Settings "check for updates" + a boot belt-and-
+/// suspenders call in case `update-available` fired before the webview
+/// attached its listener). Returns `None` when already up to date.
+#[tauri::command]
+async fn updater_check(app: AppHandle) -> Option<UpdateInfo> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().ok()?;
+    match updater.check().await {
+        Ok(Some(update)) => {
+            Some(UpdateInfo { version: update.version.clone(), notes: update.body.clone().unwrap_or_default() })
+        }
+        _ => None,
+    }
+}
+
+/// Download + install the pending update with progress events, then relaunch.
+/// First kills any lingering `mod-tools.exe`/runoverlay processes: they hold
+/// `cslol-tools\mod-tools.exe` open, and the NSIS installer (silent or manual)
+/// fails with "Error opening file for writing" if it can't overwrite them —
+/// the exact error a stale overlay from an earlier game causes. Emits
+/// `update-progress` ({downloaded,total}) so the UI can render a themed bar.
+#[tauri::command]
+async fn updater_install(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    // Release cslol-tools file locks so the installer can overwrite them.
+    let injection = app.state::<Arc<AppState>>().skins_injection.lock_safe().clone();
+    if let Some(inj) = injection {
+        eprintln!("[update] killing lingering mod-tools processes before install");
+        inj.kill_all_modtools_processes();
+    }
+
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update =
+        updater.check().await.map_err(|e| e.to_string())?.ok_or_else(|| "no update available".to_string())?;
+
+    let downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let app_progress = app.clone();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                let d = downloaded.fetch_add(chunk as u64, Ordering::SeqCst) + chunk as u64;
+                let _ = app_progress
+                    .emit("update-progress", json!({ "downloaded": d, "total": total.unwrap_or(0) }));
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    eprintln!("[update] installed - relaunching");
+    app.restart();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -817,7 +875,9 @@ pub fn run() {
             skins_party_enable,
             skins_party_disable,
             skins_party_add_peer,
-            skins_party_get_state
+            skins_party_get_state,
+            updater_check,
+            updater_install
         ])
         .setup(|app| {
             // Auto-start Auto-Accept (matches the Python app's auto_start_main).
@@ -833,7 +893,7 @@ pub fn run() {
             // version. `cfg!(debug_assertions)` skips it in dev builds.
             if !cfg!(debug_assertions) {
                 let update_handle = handle.clone();
-                tauri::async_runtime::spawn(async move { run_startup_update(update_handle).await });
+                tauri::async_runtime::spawn(async move { run_startup_update_check(update_handle).await });
             }
 
             // Skins phase engine (S2): always spawned — it just idles (poll

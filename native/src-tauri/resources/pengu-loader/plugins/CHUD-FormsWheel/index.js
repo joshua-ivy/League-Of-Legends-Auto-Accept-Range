@@ -2,7 +2,7 @@
  * @name Chud-FormsWheel
  * @author Chud Team
  * @description Custom chroma wheel with asset-based buttons - Adapted from CHUD-ChromaWheel
- * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
+ * @link https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range
  */
 (function createFormsWheel() {
   const LOG_PREFIX = "[FormsWheel]";

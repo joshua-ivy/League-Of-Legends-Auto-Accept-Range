@@ -2,11 +2,11 @@
  * @name Chud-SettingsPanel
  * @author Chud Team
  * @description Settings panel for Chud
- * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
+ * @link https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range
  */
 (function initSettingsPanel() {
   const LOG_PREFIX = "[Chud-SettingsPanel]";
-  const GITHUB_URL = "https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range";
+  const GITHUB_URL = "https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range";
   const DISCORD_URL = "https://discord.gg/a2QTg7btaT";
 
   const PANEL_ID = "chud-settings-panel";

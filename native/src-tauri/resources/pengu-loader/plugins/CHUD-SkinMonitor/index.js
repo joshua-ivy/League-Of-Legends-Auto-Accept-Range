@@ -2,7 +2,7 @@
  * @name Chud-SkinMonitor
  * @author Chud Team
  * @description Skin monitor for Pengu Loader
- * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
+ * @link https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range
  */
 
 console.log("[SkinMonitor] Plugin loaded");
