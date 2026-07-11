@@ -128,122 +128,548 @@
       z-index: 10000;
       pointer-events: none;
     }
-    
-    #${PANEL_ID} .flyout-container {
-      pointer-events: all;
-    }
-    
-    lol-uikit-flyout-frame#${FLYOUT_ID},
-    #${FLYOUT_ID} {
-      min-width: 360px !important;
-      max-width: 400px !important;
-      background: transparent !important;
-      background-color: transparent !important;
-      background-image: none !important;
-      border-radius: 0 !important;
-      padding: 0 !important;
-      color: #7ceeff;
-      font-family: "JetBrains Mono", monospace;
-      display: flex !important;
-      flex-direction: column !important;
-      align-items: center !important;
-      box-shadow: none !important;
-      border: none !important;
-      margin: 0 !important;
-      overflow: visible !important;
-      transform-origin: top center !important;
-    }
-    
-    lol-uikit-flyout-frame#${FLYOUT_ID}::before,
-    lol-uikit-flyout-frame#${FLYOUT_ID}::after,
-    #${FLYOUT_ID}::before,
-    #${FLYOUT_ID}::after {
-      display: none !important;
-      background: none !important;
-      background-color: transparent !important;
-      background-image: none !important;
-      content: none !important;
-    }
-    
-    lol-uikit-flyout-frame#${FLYOUT_ID} lc-flyout-content,
-    lol-uikit-flyout-frame#${FLYOUT_ID} .lc-flyout-content,
-    #${FLYOUT_ID} lc-flyout-content,
-    #${FLYOUT_ID} .lc-flyout-content {
-      background: #070b16 !important;
-      background-color: #070b16 !important;
-      background-image: none !important;
-      border-radius: 0 !important;
-      padding: 20px !important;
-      width: 100% !important;
-      box-sizing: border-box !important;
-      border: none !important;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
-      margin: 0 !important;
-    }
-    
-    #${FLYOUT_ID} .settings-title {
-      font-size: 18px;
-      font-weight: bold !important;
-      margin-bottom: 12px;
-      color: #35e4ff;
-      text-align: center;
-      width: 100%;
-    }
-    
-    #${FLYOUT_ID} .settings-section {
-      margin-bottom: 12px;
-      width: 100%;
-    }
-    
-    #${FLYOUT_ID} .settings-label {
-      display: block;
-      margin-bottom: 8px;
-      font-size: 14px;
-      color: #7ceeff;
-    }
-    
-    #${FLYOUT_ID} .settings-value {
-      display: inline-block;
-      margin-left: 10px;
-      font-size: 14px;
-      color: #35e4ff;
-      min-width: 50px;
+
+    /* ===== Neon Glass design tokens (see design_handoff_settings_redesign/README.md) ===== */
+    #${PANEL_ID} {
+      --magenta: #ff3d9a;
+      --magenta-soft: #ff8ac4;
+      --cyan: #35e4ff;
+      --cyan-soft: #7ceeff;
+      --neon-grad: linear-gradient(135deg, #ff3d9a, #35e4ff);
+      --neon-grad-h: linear-gradient(90deg, #ff3d9a, #35e4ff);
+      --accent-glow: rgba(255, 61, 154, .5);
+      --bg-base: #0a0a1f;
+      --bg-stage: #0b0b22;
+      --glass-border: rgba(255, 255, 255, .10);
+      --bg-inset: rgba(6, 6, 20, .55);
+      --text-primary: #f2f2ff;
+      --text-secondary: #9a9ac8;
+      --text-muted: #6b6b96;
+      --text-dark: #0a0a1f;
+      --red: #ff5470;
+      --green: #33e0a0;
+      --amber: #e6a23c;
+      --r-sm: 8px;
+      --r-md: 12px;
+      --r-lg: 18px;
     }
 
-    #${FLYOUT_ID} .chud-tooltip-wrapper {
+    /* Fonts served by the local bridge (see native/pengu-loader plugin resources). */
+    @font-face { font-family: "Cinzel"; src: url("http://127.0.0.1:${window.__chudBridge ? window.__chudBridge.port : 50000}/asset/fonts/cinzel-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
+    @font-face { font-family: "Cinzel"; src: url("http://127.0.0.1:${window.__chudBridge ? window.__chudBridge.port : 50000}/asset/fonts/cinzel-700.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+    @font-face { font-family: "Marcellus"; src: url("http://127.0.0.1:${window.__chudBridge ? window.__chudBridge.port : 50000}/asset/fonts/marcellus-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+    @font-face { font-family: "Barlow"; src: url("http://127.0.0.1:${window.__chudBridge ? window.__chudBridge.port : 50000}/asset/fonts/barlow-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+    @font-face { font-family: "Barlow"; src: url("http://127.0.0.1:${window.__chudBridge ? window.__chudBridge.port : 50000}/asset/fonts/barlow-500.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }
+    @font-face { font-family: "Space Mono"; src: url("http://127.0.0.1:${window.__chudBridge ? window.__chudBridge.port : 50000}/asset/fonts/spacemono-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+    @font-face { font-family: "Space Mono"; src: url("http://127.0.0.1:${window.__chudBridge ? window.__chudBridge.port : 50000}/asset/fonts/spacemono-700.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+
+    @keyframes hxFloat {
+      0% { transform: translateY(0) scale(.7); opacity: 0; }
+      15% { opacity: .85; }
+      70% { opacity: .5; }
+      100% { transform: translateY(-150px) scale(1); opacity: 0; }
+    }
+    @keyframes hxPulse { 0%, 100% { opacity: .28; } 50% { opacity: .5; } }
+    @keyframes hxReveal { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes hxToast { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+    @keyframes hxHandle {
+      0%, 100% { box-shadow: 0 0 7px var(--accent-glow, rgba(255,61,154,.5)), 0 1px 2px rgba(0,0,0,.6); }
+      50% { box-shadow: 0 0 16px var(--accent-glow, rgba(255,61,154,.9)), 0 1px 2px rgba(0,0,0,.6); }
+    }
+    @keyframes hxShimmer {
+      0% { transform: translateX(-160%) skewX(-18deg); }
+      55%, 100% { transform: translateX(320%) skewX(-18deg); }
+    }
+
+    /* ---- Backdrop: full-screen animated midnight scrim behind the centered modal ---- */
+    #${PANEL_ID} .chud-backdrop {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 44px 20px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background:
+        radial-gradient(1100px 640px at 84% -12%, rgba(255,61,154,.16), transparent 60%),
+        radial-gradient(1000px 620px at 4% 112%, rgba(53,228,255,.14), transparent 58%),
+        linear-gradient(160deg, #0a0a1f, #100f2e 60%, #0b0b22);
+      pointer-events: all;
+    }
+    #${PANEL_ID} .chud-decor {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    #${PANEL_ID} .chud-grid-layer {
+      position: absolute;
+      inset: 0;
+      opacity: .5;
+      background-image:
+        repeating-linear-gradient(60deg, transparent 0 43px, rgba(255,255,255,.05) 43px 44px),
+        repeating-linear-gradient(-60deg, transparent 0 43px, rgba(255,255,255,.05) 43px 44px);
+      -webkit-mask-image: radial-gradient(circle at 50% 42%, #000 0%, transparent 68%);
+      mask-image: radial-gradient(circle at 50% 42%, #000 0%, transparent 68%);
+    }
+    #${PANEL_ID} .chud-glow-magenta {
+      position: absolute;
+      width: 640px;
+      height: 640px;
+      left: 50%;
+      top: 31%;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: radial-gradient(circle, var(--accent-glow, rgba(255,61,154,.5)) 0%, transparent 62%);
+      filter: blur(34px);
+      animation: hxPulse 7s ease-in-out infinite;
+    }
+    #${PANEL_ID} .chud-glow-cyan {
+      position: absolute;
+      width: 560px;
+      height: 560px;
+      left: 50%;
+      top: 66%;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(53,228,255,.42) 0%, transparent 64%);
+      filter: blur(46px);
+      opacity: .55;
+    }
+    #${PANEL_ID} .chud-mote {
+      position: absolute;
+      border-radius: 50%;
+      pointer-events: none;
+      animation-name: hxFloat;
+      animation-timing-function: ease-out;
+      animation-iteration-count: infinite;
+    }
+
+    /* ---- Modal card shell ---- */
+    #${FLYOUT_ID} {
+      position: relative;
+      z-index: 2;
+      margin: auto;
+      width: min(600px, 100%);
+      max-height: calc(100vh - 88px);
+      overflow-y: auto;
+      background: linear-gradient(180deg, rgba(18,16,44,.82) 0%, rgba(12,11,33,.9) 100%);
+      border: 1px solid rgba(255,255,255,.12);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      box-shadow: 0 0 0 1px rgba(0,0,0,.4), 0 40px 90px -30px rgba(0,0,0,.9), 0 0 70px -18px var(--accent-glow, rgba(255,61,154,.42));
+      color: #f2f2ff;
+      pointer-events: all;
+    }
+    #${FLYOUT_ID} .chud-rule {
+      position: absolute;
+      top: 0;
+      left: 8%;
+      right: 8%;
+      height: 2px;
+      background: var(--neon-grad-h, linear-gradient(90deg, #ff3d9a, #35e4ff));
+      opacity: .85;
+      pointer-events: none;
+    }
+    #${FLYOUT_ID} .chud-corner { position: absolute; width: 18px; height: 18px; pointer-events: none; }
+    #${FLYOUT_ID} .chud-corner-tl { top: -1px; left: -1px; border-top: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+    #${FLYOUT_ID} .chud-corner-tr { top: -1px; right: -1px; border-top: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+    #${FLYOUT_ID} .chud-corner-bl { bottom: -1px; left: -1px; border-bottom: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+    #${FLYOUT_ID} .chud-corner-br { bottom: -1px; right: -1px; border-bottom: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+
+    /* ---- Header ---- */
+    #${FLYOUT_ID} .chud-header {
+      position: relative;
+      padding: 30px 34px 20px;
+      text-align: center;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+    }
+    #${FLYOUT_ID} #chud-version-badge {
+      position: absolute;
+      top: 22px;
+      left: 24px;
+      padding: 3px 9px 4px;
+      border: 1px solid rgba(53,228,255,.4);
+      color: var(--cyan);
+      font-family: 'Space Mono', monospace;
+      font-size: 10.5px;
+      font-weight: 400;
+      letter-spacing: .04em;
+    }
+    #${FLYOUT_ID} .chud-close-btn {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 30px;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid rgba(255,255,255,.14);
+      color: #9a9ac8;
+      font-size: 17px;
+      line-height: 1;
+      cursor: pointer;
+      transition: all .2s ease;
+    }
+    #${FLYOUT_ID} .chud-close-btn:hover {
+      border-color: var(--cyan);
+      color: var(--text-primary, #f2f2ff);
+      box-shadow: 0 0 12px -2px var(--accent-glow, rgba(255,61,154,.6));
+    }
+    #${FLYOUT_ID} .chud-emblem {
+      position: relative;
+      width: 44px;
+      height: 44px;
+      margin: 2px auto 15px;
+      filter: drop-shadow(0 0 10px var(--accent-glow, rgba(255,61,154,.6)));
+    }
+    #${FLYOUT_ID} .chud-emblem-outer { position: absolute; inset: 0; transform: rotate(45deg); border: 1.5px solid var(--cyan); }
+    #${FLYOUT_ID} .chud-emblem-mid { position: absolute; inset: 8px; transform: rotate(45deg); border: 1px solid rgba(53,228,255,.65); }
+    #${FLYOUT_ID} .chud-emblem-inner { position: absolute; inset: 15px; transform: rotate(45deg); background: var(--neon-grad); }
+    #${FLYOUT_ID} .chud-title {
+      margin: 0;
+      font-family: 'Cinzel', serif;
+      font-weight: 600;
+      font-size: 29px;
+      line-height: 1;
+      letter-spacing: .34em;
+      text-indent: .34em;
+      background: var(--neon-grad-h);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+    }
+    #${FLYOUT_ID} .chud-subtitle {
+      margin-top: 10px;
+      font-family: 'Marcellus', serif;
+      font-size: 11px;
+      letter-spacing: .3em;
+      text-transform: uppercase;
+      color: #9a9ac8;
+    }
+
+    /* ---- Body / sections ---- */
+    #${FLYOUT_ID} .chud-body { padding: 24px 34px 26px; display: flex; flex-direction: column; gap: 26px; }
+    #${FLYOUT_ID} .chud-section { display: flex; flex-direction: column; gap: 20px; }
+    #${FLYOUT_ID} .chud-section-label-row { display: flex; align-items: center; gap: 13px; }
+    #${FLYOUT_ID} .chud-section-label {
+      font-family: 'Cinzel', serif;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .24em;
+      text-transform: uppercase;
+      color: var(--text-primary, #f2f2ff);
+      white-space: nowrap;
+    }
+    #${FLYOUT_ID} .chud-section-rule { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(53,228,255,.6), transparent); }
+
+    /* ---- Diamond sliders (TIMING) ---- */
+    #${FLYOUT_ID} .chud-sliders { display: flex; flex-direction: column; gap: 13px; user-select: none; }
+    #${FLYOUT_ID} .chud-slider-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    #${FLYOUT_ID} .chud-slider-label-left { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    #${FLYOUT_ID} .chud-tooltip-wrapper { display: inline-flex; align-items: center; justify-content: center; position: relative; flex: 0 0 auto; }
+    #${FLYOUT_ID} .chud-tooltip-icon {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      position: relative;
-      margin-right: 8px;
-      top: 3px;
-    }
-
-    #${FLYOUT_ID} .chud-tooltip-icon {
-      width: 14px;
-      height: 14px;
-      background-image: url("http://127.0.0.1:${window.__chudBridge ? window.__chudBridge.port : 50000}/asset/tooltip.png");
-      background-size: contain;
-      background-repeat: no-repeat;
-      background-position: center;
-      opacity: 0.85;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 1px solid rgba(53,228,255,.55);
+      color: var(--cyan);
+      background: transparent;
+      font-family: 'Space Mono', monospace;
+      font-size: 10px;
+      line-height: 1;
       cursor: help;
-      border: none;
       padding: 0;
-      margin: 0;
-      outline: none;
-      background-color: transparent;
     }
-
-    #${FLYOUT_ID} .chud-tooltip-icon:hover {
-      opacity: 1;
-    }
-
     #${FLYOUT_ID} .chud-tooltip-icon:focus-visible {
       outline: 1px solid #35e4ff;
       outline-offset: 2px;
-      border-radius: 3px;
+      border-radius: 50%;
     }
+    #${FLYOUT_ID} .chud-slider-name { font-family: 'Marcellus', serif; font-size: 15.5px; color: #f2f2ff; }
+    #${FLYOUT_ID} .chud-slider-unit { font-family: 'Space Mono', monospace; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: #6b6b96; }
+    #${FLYOUT_ID} .chud-slider-value { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 15px; color: var(--cyan); white-space: nowrap; }
+    #${FLYOUT_ID} .chud-slider-track { position: relative; height: 24px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+    #${FLYOUT_ID} .chud-slider-rail { position: absolute; left: 0; right: 0; height: 2px; background: rgba(255,255,255,.12); }
+    #${FLYOUT_ID} .chud-slider-fill {
+      position: absolute;
+      left: 0;
+      height: 2px;
+      background: var(--neon-grad-h);
+      box-shadow: 0 0 9px var(--accent-glow, rgba(255,61,154,.6));
+    }
+    #${FLYOUT_ID} .chud-slider-handle {
+      position: absolute;
+      top: 50%;
+      width: 16px;
+      height: 16px;
+      transform: translate(-50%, -50%) rotate(45deg);
+      background: var(--neon-grad);
+      border: 1px solid var(--text-primary, #f2f2ff);
+      animation: hxHandle 2.8s ease-in-out infinite;
+    }
+    #${FLYOUT_ID} .chud-slider-handle-inner { position: absolute; inset: 4px; border: 1px solid rgba(10,10,31,.5); }
+
+    /* ---- Startup: auto-start toggle ---- */
+    #${FLYOUT_ID} .chud-startup-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; user-select: none; }
+    #${FLYOUT_ID} .chud-startup-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    #${FLYOUT_ID} .chud-startup-title { font-family: 'Marcellus', serif; font-size: 15.5px; color: #f2f2ff; }
+    #${FLYOUT_ID} .chud-startup-hint { font-family: 'Barlow', sans-serif; font-size: 12.5px; color: #9a9ac8; }
+    #${FLYOUT_ID} .chud-toggle {
+      position: relative;
+      flex: 0 0 auto;
+      width: 54px;
+      height: 27px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(255,255,255,.08);
+      cursor: pointer;
+      padding: 0;
+      transition: background .3s ease, border-color .3s ease, box-shadow .3s ease;
+    }
+    #${FLYOUT_ID} .chud-toggle.on { border-color: transparent; background: var(--neon-grad-h); box-shadow: 0 0 16px rgba(255,61,154,.5); }
+    #${FLYOUT_ID} .chud-toggle-knob {
+      position: absolute;
+      top: 50%;
+      left: 16px;
+      width: 19px;
+      height: 19px;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      background: #5a5a86;
+      transition: left .3s cubic-bezier(.4,1.3,.6,1), background .3s ease;
+    }
+    #${FLYOUT_ID} .chud-toggle.on .chud-toggle-knob { left: 38px; background: #ffffff; }
+
+    /* ---- Startup: game path ---- */
+    #${FLYOUT_ID} .chud-path-group { display: flex; flex-direction: column; gap: 10px; }
+    #${FLYOUT_ID} .chud-path-label { font-family: 'Marcellus', serif; font-size: 15.5px; color: #f2f2ff; }
+    #${FLYOUT_ID} .chud-path-input-row { display: flex; align-items: stretch; }
+    #${FLYOUT_ID} #game-path-input {
+      flex: 1;
+      min-width: 0;
+      height: 44px;
+      padding: 0 14px;
+      background: rgba(8,7,26,.55);
+      border: 1px solid rgba(255,255,255,.12);
+      border-right: none;
+      border-radius: 10px 0 0 10px;
+      color: #e9e9ff;
+      font-family: 'Space Mono', monospace;
+      font-size: 12.5px;
+      letter-spacing: .01em;
+      outline: none;
+      box-sizing: border-box;
+      transition: border-color .2s ease, box-shadow .2s ease;
+    }
+    #${FLYOUT_ID} #game-path-input::placeholder { color: #55557a; }
+    #${FLYOUT_ID} #game-path-input:focus {
+      border-color: var(--cyan);
+      box-shadow: inset 0 0 0 1px var(--cyan), 0 0 0 3px rgba(53,228,255,.15);
+    }
+    #${FLYOUT_ID} #path-status {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 44px;
+      background: rgba(8,7,26,.55);
+      border-top: 1px solid rgba(255,255,255,.12);
+      border-bottom: 1px solid rgba(255,255,255,.12);
+      font-size: 13px;
+    }
+    #${FLYOUT_ID} .chud-browse-btn {
+      flex: 0 0 auto;
+      width: 46px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 0 10px 10px 0;
+      color: var(--cyan);
+      cursor: pointer;
+      transition: color .2s ease, box-shadow .2s ease, background .2s ease;
+    }
+    #${FLYOUT_ID} .chud-browse-btn:hover { background: rgba(255,255,255,.1); box-shadow: 0 0 12px -3px var(--accent-glow, rgba(255,61,154,.6)); }
+
+    /* ---- Mods & Tools: "Add custom mods" expander ---- */
+    #${FLYOUT_ID} .chud-expander { border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: rgba(255,255,255,.03); overflow: hidden; }
+    #${FLYOUT_ID} .chud-expander-head {
+      width: 100%;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 15px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: #f2f2ff;
+      transition: background .2s ease, color .2s ease;
+    }
+    #${FLYOUT_ID} .chud-expander-head:hover { background: rgba(255,255,255,.05); color: var(--text-primary, #f2f2ff); }
+    #${FLYOUT_ID} .chud-expander-head-left { display: flex; align-items: center; gap: 11px; }
+    #${FLYOUT_ID} .chud-expander-icon { display: inline-flex; width: 18px; height: 18px; color: var(--cyan); }
+    #${FLYOUT_ID} .chud-expander-name { font-family: 'Marcellus', serif; font-size: 15.5px; }
+    #${FLYOUT_ID} .chud-expander-chevron { display: inline-flex; width: 16px; height: 16px; color: var(--cyan); transition: transform .3s ease; }
+    #${FLYOUT_ID} .chud-expander-chevron.open { transform: rotate(180deg); }
+    #${FLYOUT_ID} .chud-expander-body {
+      padding: 0 15px 16px;
+      border-top: 1px solid rgba(255,255,255,.08);
+      animation: hxReveal .3s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #${FLYOUT_ID} .chud-expander-hint {
+      margin-top: 15px;
+      padding: 14px 16px;
+      border: 1px dashed rgba(53,228,255,.34);
+      border-radius: 10px;
+      background: rgba(8,7,26,.4);
+      text-align: center;
+      font-family: 'Barlow', sans-serif;
+      font-size: 12.5px;
+      color: #9a9ac8;
+    }
+    #${FLYOUT_ID} .chud-mod-row {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 9px 12px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 9px;
+      cursor: pointer;
+      transition: border-color .2s ease, background .2s ease;
+    }
+    #${FLYOUT_ID} .chud-mod-row:hover { border-color: var(--cyan); background: rgba(255,255,255,.07); }
+    #${FLYOUT_ID} .chud-mod-bullet { width: 9px; height: 9px; transform: rotate(45deg); background: var(--neon-grad); flex: 0 0 auto; }
+    #${FLYOUT_ID} .chud-mod-name { flex: 1; min-width: 0; font-family: 'Barlow', sans-serif; font-size: 13.5px; color: #e6e6ff; }
+
+    /* ---- Mods & Tools: tool grid ---- */
+    #${FLYOUT_ID} .chud-tool-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    #${FLYOUT_ID} .chud-tool-card {
+      position: relative;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 16px 8px;
+      min-height: 86px;
+      text-align: center;
+      background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 12px;
+      color: #c9c9e6;
+      transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, color .18s ease;
+    }
+    #${FLYOUT_ID} .chud-tool-card:hover {
+      border-color: var(--cyan);
+      color: var(--text-primary, #f2f2ff);
+      transform: translateY(-2px);
+      box-shadow: 0 10px 24px -10px rgba(0,0,0,.6), 0 0 16px -4px var(--accent-glow, rgba(255,61,154,.55));
+    }
+    #${FLYOUT_ID} .chud-tool-card:active { transform: translateY(0); }
+    #${FLYOUT_ID} .chud-tool-icon { display: inline-flex; width: 24px; height: 24px; color: var(--cyan); }
+    #${FLYOUT_ID} .chud-tool-label { font-family: 'Barlow', sans-serif; font-size: 12.5px; }
+
+    /* ---- Footer ---- */
+    #${FLYOUT_ID} .chud-footer { display: flex; align-items: center; justify-content: space-between; padding: 20px 34px 26px; border-top: 1px solid rgba(255,255,255,.08); }
+    #${FLYOUT_ID} .chud-footer-links { display: flex; align-items: center; gap: 18px; }
+    #${FLYOUT_ID} .chud-github-link,
+    #${FLYOUT_ID} .chud-discord-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: 'Barlow', sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: .02em;
+      color: #9a9ac8;
+      text-decoration: none;
+      transition: color .2s ease;
+    }
+    #${FLYOUT_ID} .chud-github-link:hover,
+    #${FLYOUT_ID} .chud-discord-link:hover { color: var(--cyan); }
+    #${FLYOUT_ID} .chud-footer-icon { display: inline-flex; width: 16px; height: 16px; }
+    #${FLYOUT_ID} .chud-save-btn {
+      position: relative;
+      overflow: hidden;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-width: 152px;
+      height: 46px;
+      padding: 0 28px;
+      cursor: pointer;
+      border: none;
+      border-radius: 10px;
+      color: #0a0a1f;
+      font-family: 'Cinzel', serif;
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      background: var(--neon-grad);
+      box-shadow: 0 6px 22px -4px var(--accent-glow, rgba(255,61,154,.5)), inset 0 1px 0 rgba(255,255,255,.35);
+      transition: filter .18s ease, box-shadow .18s ease, transform .12s ease;
+    }
+    #${FLYOUT_ID} .chud-save-btn:hover {
+      filter: brightness(1.08);
+      box-shadow: 0 8px 30px -2px var(--accent-glow, rgba(255,61,154,.7)), inset 0 1px 0 rgba(255,255,255,.4);
+      transform: translateY(-1px);
+    }
+    #${FLYOUT_ID} .chud-save-btn:active { transform: translateY(0); filter: brightness(.97); }
+    #${FLYOUT_ID} .chud-save-shimmer {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 34%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.6), transparent);
+      transform: translateX(-160%) skewX(-18deg);
+      animation: hxShimmer 4.8s ease-in-out 1.5s infinite;
+      pointer-events: none;
+    }
+    #${FLYOUT_ID} .chud-save-icon { display: inline-flex; width: 16px; height: 16px; }
+
+    /* ---- Toast ---- */
+    #${PANEL_ID} .chud-toast {
+      position: fixed;
+      left: 50%;
+      bottom: 40px;
+      z-index: 10005;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 16px;
+      border-radius: 10px;
+      background: rgba(12,11,33,.94);
+      border: 1px solid rgba(53,228,255,.45);
+      box-shadow: 0 12px 30px -8px rgba(0,0,0,.7), 0 0 20px -6px var(--accent-glow, rgba(255,61,154,.6));
+      animation: hxToast .3s ease forwards;
+      pointer-events: none;
+    }
+    #${PANEL_ID} .chud-toast-icon { display: inline-flex; width: 15px; height: 15px; color: var(--cyan); }
+    #${PANEL_ID} .chud-toast-text { font-family: 'Barlow', sans-serif; font-size: 12.5px; color: #f2f2ff; }
 
     /* Tooltip bubble is rendered globally (outside flyout) */
     #chud-global-tooltip {
@@ -324,294 +750,6 @@
       border-bottom: 8px solid #3d4a68;
       margin-top: -1px;
     }
-    
-    #${FLYOUT_ID} .settings-slider {
-      width: 100%;
-      height: 6px;
-      background: #2a3350;
-      border-radius: 3px;
-      outline: none;
-      -webkit-appearance: none;
-      margin: 6px 0;
-    }
-    
-    #${FLYOUT_ID} .settings-slider::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      appearance: none;
-      width: 16px;
-      height: 16px;
-      background: #35e4ff;
-      border-radius: 50%;
-      cursor: pointer;
-    }
-    
-    #${FLYOUT_ID} .settings-slider::-moz-range-thumb {
-      width: 16px;
-      height: 16px;
-      background: #35e4ff;
-      border-radius: 50%;
-      cursor: pointer;
-      border: none;
-    }
-    
-    #${FLYOUT_ID} .settings-checkbox {
-      width: 18px;
-      height: 18px;
-      margin-right: 8px;
-      cursor: pointer;
-    }
-    
-    #${FLYOUT_ID} .settings-input {
-      width: 100%;
-      padding: 8px;
-      background: #2a3350;
-      border: 1px solid #3d4a68;
-      border-radius: 4px;
-      color: #7ceeff;
-      font-size: 14px;
-      font-family: "JetBrains Mono", monospace;
-      box-sizing: border-box;
-    }
-    
-    #${FLYOUT_ID} .settings-input::placeholder {
-      font-family: "JetBrains Mono", monospace;
-      color: #7d7d7d;
-      opacity: 1;
-    }
-    
-    #${FLYOUT_ID} .settings-input::-webkit-input-placeholder {
-      font-family: "JetBrains Mono", monospace;
-      color: #7d7d7d;
-    }
-    
-    #${FLYOUT_ID} .settings-input::-moz-placeholder {
-      font-family: "JetBrains Mono", monospace;
-      color: #7d7d7d;
-      opacity: 1;
-    }
-    
-    #${FLYOUT_ID} .settings-input:-ms-input-placeholder {
-      font-family: "JetBrains Mono", monospace;
-      color: #7d7d7d;
-    }
-    
-    #${FLYOUT_ID} .settings-input:focus {
-      outline: none;
-      border-color: #35e4ff;
-    }
-    
-    #${FLYOUT_ID} .settings-status {
-      display: inline-block;
-      margin-left: 8px;
-      font-size: 16px;
-    }
-    
-    #${FLYOUT_ID} .settings-button {
-      width: 100%;
-      padding: 10px;
-      background: #0b1120;
-      border: 1px solid #35e4ff;
-      border-radius: 4px;
-      color: #35e4ff;
-      font-size: 14px;
-      font-weight: bold;
-      cursor: pointer;
-      margin-top: 8px;
-      transition: background 0.2s;
-    }
-    
-    #${FLYOUT_ID} .settings-button:hover {
-      background: #1a2332;
-    }
-    
-    #${FLYOUT_ID} .settings-links {
-      display: flex;
-      justify-content: space-between;
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid #2a3350;
-      width: 100%;
-    }
-    
-    #${FLYOUT_ID} form {
-      width: 100%;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-    
-    #${FLYOUT_ID} .settings-link {
-      color: #35e4ff;
-      text-decoration: none;
-      font-size: 14px;
-      transition: color 0.2s;
-    }
-    
-    #${FLYOUT_ID} .settings-link:hover {
-      color: #dff3ff;
-    }
-    
-    #${FLYOUT_ID} .settings-checkbox-wrapper {
-      display: flex;
-      align-items: center;
-      margin-top: 8px;
-    }
-    
-    /* Style for the "Add custom mods" dropdown button - match League UI button styling */
-    #add-custom-mods-dropdown {
-      background: #131a2b !important;
-      background-color: #131a2b !important;
-      color: #35e4ff !important;
-      font-family: "JetBrains Mono", monospace !important;
-      pointer-events: all !important;
-      position: relative !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      box-sizing: border-box !important;
-      min-width: 90px !important;
-      height: 100% !important;
-      min-height: 32px !important;
-      cursor: pointer !important;
-      -webkit-user-select: none !important;
-      text-align: center !important;
-      margin-top: 8px !important;
-      transition: background 0.2s !important;
-      z-index: 10003 !important;
-    }
-    
-    /* Ensure dropdown menu appears above other elements */
-    #add-custom-mods-dropdown[class*="active"],
-    #add-custom-mods-dropdown.active {
-      z-index: 10003 !important;
-    }
-    
-    /* Dropdown menu options container */
-    #add-custom-mods-dropdown ~ *,
-    #add-custom-mods-dropdown .lol-uikit-dropdown-menu,
-    #add-custom-mods-dropdown [role="listbox"] {
-      z-index: 10003 !important;
-    }
-    
-    /* Remove any blue colors or unwanted backgrounds from child elements, but keep dropdown background */
-    #add-custom-mods-dropdown > * {
-      background: transparent !important;
-      background-color: transparent !important;
-    }
-    
-    /* Ensure dropdown itself and pseudo-elements maintain background */
-    #add-custom-mods-dropdown,
-    #add-custom-mods-dropdown::before,
-    #add-custom-mods-dropdown::after {
-      background: #131a2b !important;
-      background-color: #131a2b !important;
-      background-image: none !important;
-      opacity: 1 !important;
-    }
-    
-    /* Hover effect - no transparency */
-    #add-custom-mods-dropdown:hover,
-    #add-custom-mods-dropdown:hover::before,
-    #add-custom-mods-dropdown:hover::after {
-      background: #131a2b !important;
-      background-color: #131a2b !important;
-      opacity: 1 !important;
-    }
-    
-    /* Remove focus/active blue colors and shining effects */
-    #add-custom-mods-dropdown:focus,
-    #add-custom-mods-dropdown:active,
-    #add-custom-mods-dropdown:focus-visible,
-    #add-custom-mods-dropdown:focus-within {
-      background: #131a2b !important;
-      background-color: #131a2b !important;
-      outline: none !important;
-      box-shadow: none !important;
-      border: none !important;
-    }
-    
-    /* Remove any glow or shine effects */
-    #add-custom-mods-dropdown:focus::before,
-    #add-custom-mods-dropdown:focus::after,
-    #add-custom-mods-dropdown:active::before,
-    #add-custom-mods-dropdown:active::after {
-      display: none !important;
-      box-shadow: none !important;
-    }
-    
-    /* Remove all glow effects including filters, transforms, and shadows */
-    #add-custom-mods-dropdown:focus,
-    #add-custom-mods-dropdown:active,
-    #add-custom-mods-dropdown:focus-visible,
-    #add-custom-mods-dropdown:focus-within,
-    #add-custom-mods-dropdown:focus *,
-    #add-custom-mods-dropdown:active * {
-      filter: none !important;
-      -webkit-filter: none !important;
-      transform: none !important;
-      -webkit-transform: none !important;
-      box-shadow: none !important;
-      text-shadow: none !important;
-      outline: none !important;
-      border-color: transparent !important;
-    }
-    
-    /* Blur focus after click */
-    #add-custom-mods-dropdown {
-      outline: none !important;
-    }
-    
-    /* Don't center dropdown menu options */
-    #add-custom-mods-dropdown .framed-dropdown-type {
-      text-align: left !important;
-    }
-    
-    /* Hide placeholder option from dropdown menu (but keep it for header display) */
-    #add-custom-mods-dropdown[class*="active"] .placeholder-option,
-    #add-custom-mods-dropdown.active .placeholder-option {
-      display: none !important;
-    }
-    
-    /* Force placeholder to always be selected for display */
-    #add-custom-mods-dropdown .placeholder-option {
-      display: block !important;
-    }
-    
-    /* Ensure placeholder text is always shown in header */
-    #add-custom-mods-dropdown:not([class*="active"]) .placeholder-option {
-      display: block !important;
-    }
-    
-    /* Hide checkmark icons in dropdown */
-    #add-custom-mods-dropdown lol-uikit-dropdown-option::after,
-    #add-custom-mods-dropdown lol-uikit-dropdown-option::before,
-    #add-custom-mods-dropdown .framed-dropdown-type::after,
-    #add-custom-mods-dropdown .framed-dropdown-type::before,
-    #add-custom-mods-dropdown lol-uikit-dropdown-option [class*="check"],
-    #add-custom-mods-dropdown lol-uikit-dropdown-option [class*="icon"],
-    #add-custom-mods-dropdown lol-uikit-dropdown-option [class*="selected"] {
-      display: none !important;
-      visibility: hidden !important;
-      opacity: 0 !important;
-    }
-    
-    /* Override :host .ui-dropdown color to match button contrast */
-    #add-custom-mods-dropdown .ui-dropdown {
-      color: #7ceeff !important;
-      font-size: 12px !important;
-      font-weight: normal !important;
-      line-height: 16px !important;
-      letter-spacing: 0.025em !important;
-      -webkit-font-smoothing: subpixel-antialiased !important;
-    }
-    
-    /* Target shadow DOM content via part or direct selector */
-    #add-custom-mods-dropdown::part(content),
-    #add-custom-mods-dropdown .ui-dropdown-current-content,
-    #add-custom-mods-dropdown .ui-dropdown-current-content.shadow {
-      color: #7ceeff !important;
-    }
-    
     
     /* Add Custom Mods Dialog Styles */
     #add-custom-mods-dialog,
@@ -1274,15 +1412,19 @@
   function handleSettingsSaved(payload) {
     if (payload.success) {
       log("info", "Settings saved successfully", payload);
-      // Show success message to user
-      const saveButton = document.getElementById("save-button");
-      if (saveButton) {
-        const originalText = saveButton.textContent;
-        saveButton.textContent = "Saved!";
+      // Show success message to user ("Saved" + check icon for ~2.2s, per the redesign spec)
+      const saveLabel = document.getElementById("save-button-label");
+      const saveIcon = document.getElementById("save-button-icon");
+      if (saveLabel) {
+        const originalText = saveLabel.textContent;
+        saveLabel.textContent = "Saved";
+        if (saveIcon) saveIcon.style.display = "inline-flex";
         setTimeout(() => {
-          saveButton.textContent = originalText;
-        }, 2000);
+          saveLabel.textContent = originalText;
+          if (saveIcon) saveIcon.style.display = "none";
+        }, 2200);
       }
+      showChudToast("Settings saved");
 
       // After a successful save: if the user actually increased a value enough to satisfy the
       // recommendation, clear all diagnostics entries from that category so they stay gone.
@@ -1302,16 +1444,18 @@
     } else {
       log("error", "Settings save failed", payload);
       // Show error message to user
-      const saveButton = document.getElementById("save-button");
-      if (saveButton) {
-        const originalText = saveButton.textContent;
-        saveButton.textContent = payload.error || "Error saving settings";
-        saveButton.style.background = "#8b0000";
+      const saveLabel = document.getElementById("save-button-label");
+      const saveBtn = document.getElementById("save-button");
+      if (saveLabel) {
+        const originalText = saveLabel.textContent;
+        saveLabel.textContent = payload.error || "Error saving settings";
+        if (saveBtn) saveBtn.style.background = "#8b0000";
         setTimeout(() => {
-          saveButton.textContent = originalText;
-          saveButton.style.background = "";
+          saveLabel.textContent = originalText;
+          if (saveBtn) saveBtn.style.background = "";
         }, 3000);
       }
+      showChudToast(payload.error || "Failed to save settings");
     }
   }
 
@@ -1343,521 +1487,297 @@
     panel.style.pointerEvents = "none";
     document.body.appendChild(panel);
 
-    // Create backdrop for click-outside-to-close
+    // Backdrop: full-screen animated midnight scrim, click-outside-to-close, flex-centers the modal card.
     const backdrop = document.createElement("div");
-    backdrop.style.position = "fixed";
-    backdrop.style.top = "0";
-    backdrop.style.left = "0";
-    backdrop.style.width = "100%";
-    backdrop.style.height = "100%";
-    backdrop.style.zIndex = "9999";
-    backdrop.style.background = "transparent";
-    backdrop.style.pointerEvents = "all";
+    backdrop.className = "chud-backdrop";
     backdrop.addEventListener("click", (e) => {
-      // Only close if clicking directly on backdrop, not on flyout
+      // Only close if clicking directly on the backdrop, not the card
       if (e.target === backdrop) {
         closeSettingsPanel();
       }
     });
     panel.appendChild(backdrop);
 
-    // Get the actual icon element position (not the parent container)
-    const iconElement =
-      navItem.querySelector(".menu-item-icon") ||
-      navItem.querySelector(".menu-item-icon-wrapper") ||
-      navItem;
-    const iconRect = iconElement.getBoundingClientRect();
-
-    // Create flyout frame
-    let flyoutFrame;
-    try {
-      flyoutFrame = document.createElement("lol-uikit-flyout-frame");
-      flyoutFrame.id = FLYOUT_ID;
-      flyoutFrame.className = "flyout";
-      flyoutFrame.setAttribute("orientation", "bottom");
-      flyoutFrame.setAttribute("animated", "true");
-      flyoutFrame.setAttribute("show", "true");
-    } catch (e) {
-      log("debug", "Could not create custom element, using div", e);
-      flyoutFrame = document.createElement("div");
-      flyoutFrame.id = FLYOUT_ID;
-      flyoutFrame.className = "flyout";
+    // Decorative layers (diamond grid + glows + drifting motes) — pointer-events:none so they
+    // never steal the backdrop's click-to-close.
+    const decor = document.createElement("div");
+    decor.className = "chud-decor";
+    const gridLayer = document.createElement("div");
+    gridLayer.className = "chud-grid-layer";
+    decor.appendChild(gridLayer);
+    const glowMagenta = document.createElement("div");
+    glowMagenta.className = "chud-glow-magenta";
+    decor.appendChild(glowMagenta);
+    const glowCyan = document.createElement("div");
+    glowCyan.className = "chud-glow-cyan";
+    decor.appendChild(glowCyan);
+    const MOTE_COUNT = 14;
+    for (let i = 0; i < MOTE_COUNT; i++) {
+      const mote = document.createElement("div");
+      mote.className = "chud-mote";
+      const size = 2 + Math.random() * 2.5;
+      const isMagenta = i % 2 === 0;
+      mote.style.left = `${4 + Math.random() * 92}%`;
+      mote.style.bottom = `${-10 - Math.random() * 20}px`;
+      mote.style.width = `${size}px`;
+      mote.style.height = `${size}px`;
+      mote.style.background = isMagenta ? "#ff3d9a" : "#35e4ff";
+      mote.style.boxShadow = isMagenta ? "0 0 6px rgba(255,61,154,.8)" : "0 0 6px rgba(53,228,255,.8)";
+      mote.style.animationDuration = `${8.5 + Math.random() * 4.5}s`;
+      mote.style.animationDelay = `${Math.random() * 10}s`;
+      decor.appendChild(mote);
     }
+    backdrop.appendChild(decor);
 
-    // Use absolute positioning within the fixed panel container
-    flyoutFrame.style.position = "absolute";
-    flyoutFrame.style.overflow = "visible";
-    // Position below the icon, centered horizontally on the icon
-    flyoutFrame.style.top = `${iconRect.bottom + 45}px`;
-    flyoutFrame.style.left = `${iconRect.left + iconRect.width / 2}px`;
-    flyoutFrame.style.transform = "translateX(-50%)"; // Center the panel on the icon
-    flyoutFrame.style.zIndex = "10001";
-    flyoutFrame.style.pointerEvents = "all";
-    flyoutFrame.style.setProperty("background", "transparent", "important");
-    flyoutFrame.style.setProperty(
-      "background-color",
-      "transparent",
-      "important"
-    );
-    flyoutFrame.style.setProperty("background-image", "none", "important");
-    flyoutFrame.style.setProperty("border", "none", "important");
-    flyoutFrame.style.setProperty("box-shadow", "none", "important");
-    flyoutFrame.style.setProperty("margin", "0", "important");
-    flyoutFrame.style.setProperty("padding", "0", "important");
-    flyoutFrame.style.setProperty("overflow", "visible", "important");
-
-    // Force remove any default classes that might add background
-    if (flyoutFrame.classList) {
-      flyoutFrame.classList.forEach((cls) => {
-        if (cls.includes("background") || cls.includes("bg-")) {
-          flyoutFrame.classList.remove(cls);
-        }
-      });
-    }
-
-    // Prevent click from closing
-    flyoutFrame.addEventListener("click", (e) => {
+    // ===== Modal card =====
+    const card = document.createElement("div");
+    card.id = FLYOUT_ID;
+    card.addEventListener("click", (e) => {
       e.stopPropagation();
     });
+    backdrop.appendChild(card);
 
-    // Create flyout content
-    let flyoutContent;
-    try {
-      flyoutContent = document.createElement("lc-flyout-content");
-    } catch (e) {
-      log("debug", "Could not create lc-flyout-content, using div", e);
-      flyoutContent = document.createElement("div");
-      flyoutContent.className = "lc-flyout-content";
-    }
+    const rule = document.createElement("div");
+    rule.className = "chud-rule";
+    card.appendChild(rule);
 
-    // Create settings form
-    const form = document.createElement("div");
-    form.style.width = "100%";
-    form.style.display = "flex";
-    form.style.flexDirection = "column";
-    form.style.alignItems = "center";
+    ["tl", "tr", "bl", "br"].forEach((pos) => {
+      const corner = document.createElement("div");
+      corner.className = `chud-corner chud-corner-${pos}`;
+      card.appendChild(corner);
+    });
 
-    function getOrCreateGlobalTooltip() {
-      let el = document.getElementById("chud-global-tooltip");
-      if (el) return el;
+    // ---- Header ----
+    const header = document.createElement("div");
+    header.className = "chud-header";
 
-      el = document.createElement("div");
-      el.id = "chud-global-tooltip";
-      el.setAttribute("role", "tooltip");
-      el.setAttribute("data-show", "false");
-      document.body.appendChild(el);
-      return el;
-    }
-
-    function hideGlobalTooltip() {
-      const el = document.getElementById("chud-global-tooltip");
-      if (!el) return;
-      el.setAttribute("data-show", "false");
-    }
-
-    function showGlobalTooltipFor(anchorEl, text) {
-      const tooltip = getOrCreateGlobalTooltip();
-      tooltip.textContent = text;
-      tooltip.setAttribute("data-show", "true");
-
-      // Measure after setting text
-      const margin = 10;
-      const rect = anchorEl.getBoundingClientRect();
-      const tRect = tooltip.getBoundingClientRect();
-
-      // Prefer above, fallback below if not enough room
-      const preferredTop = rect.top - tRect.height - margin;
-      const belowTop = rect.bottom + margin;
-      const useTop = preferredTop >= 8;
-      const top = useTop ? preferredTop : belowTop;
-      tooltip.setAttribute("data-placement", useTop ? "top" : "bottom");
-
-      // Center horizontally on icon, clamp to viewport
-      let left = rect.left + rect.width / 2 - tRect.width / 2;
-      const maxLeft = window.innerWidth - tRect.width - 8;
-      left = Math.max(8, Math.min(maxLeft, left));
-
-      tooltip.style.left = `${Math.round(left)}px`;
-      tooltip.style.top = `${Math.round(top)}px`;
-
-      // Nudge the arrow towards the anchor if clamped
-      const anchorCenterX = rect.left + rect.width / 2;
-      const arrowX = Math.max(12, Math.min(tRect.width - 12, anchorCenterX - left));
-      tooltip.style.setProperty("--chud-tooltip-arrow-x", `${Math.round(arrowX)}px`);
-    }
-
-    function createTooltipButton(tooltipText, ariaLabel) {
-      const wrapper = document.createElement("span");
-      wrapper.className = "chud-tooltip-wrapper";
-
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "chud-tooltip-icon";
-      btn.setAttribute("aria-label", ariaLabel || "Info");
-
-      // prevent accidental focus/drag interactions with nearby controls
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-
-      const show = () => showGlobalTooltipFor(btn, tooltipText);
-      const hide = () => hideGlobalTooltip();
-
-      btn.addEventListener("mouseenter", show);
-      btn.addEventListener("mouseleave", hide);
-      btn.addEventListener("focus", show);
-      btn.addEventListener("blur", hide);
-
-      // Keep tooltip in correct position while resizing/scrolling
-      const reposition = () => {
-        const tt = document.getElementById("chud-global-tooltip");
-        if (!tt || tt.getAttribute("data-show") !== "true") return;
-        showGlobalTooltipFor(btn, tooltipText);
-      };
-      window.addEventListener("resize", reposition);
-      window.addEventListener("scroll", reposition, true);
-
-      wrapper.appendChild(btn);
-      return wrapper;
-    }
-
-    // Title + version badge inline
-    const titleRow = document.createElement("div");
-    titleRow.style.cssText = "display:flex;align-items:baseline;justify-content:center;gap:8px;margin-bottom:4px";
-
-    const title = document.createElement("div");
-    title.className = "settings-title";
-    title.textContent = "Settings";
-    title.style.marginBottom = "0";
-    titleRow.appendChild(title);
-
-    const versionBadge = document.createElement("span");
+    const versionBadge = document.createElement("div");
     versionBadge.id = "chud-version-badge";
-    versionBadge.style.cssText = [
-      "font-size: 11px",
-      "color: #7a93a8",
-      "font-family: JetBrains Mono, monospace",
-      "letter-spacing: 0.06em",
-    ].join(";");
-    versionBadge.textContent = currentSettings.version ? `v${currentSettings.version}` : "";
-    titleRow.appendChild(versionBadge);
+    versionBadge.textContent = currentSettings.version ? `v${currentSettings.version}` : "v0.0.0";
+    header.appendChild(versionBadge);
 
-    form.appendChild(titleRow);
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "chud-close-btn";
+    closeBtn.title = "Close";
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", () => closeSettingsPanel());
+    header.appendChild(closeBtn);
 
-    // Injection threshold section
-    const thresholdSection = document.createElement("div");
-    thresholdSection.className = "settings-section";
+    const emblem = document.createElement("div");
+    emblem.className = "chud-emblem";
+    const emblemOuter = document.createElement("div");
+    emblemOuter.className = "chud-emblem-outer";
+    const emblemMid = document.createElement("div");
+    emblemMid.className = "chud-emblem-mid";
+    const emblemInner = document.createElement("div");
+    emblemInner.className = "chud-emblem-inner";
+    emblem.appendChild(emblemOuter);
+    emblem.appendChild(emblemMid);
+    emblem.appendChild(emblemInner);
+    header.appendChild(emblem);
 
-    const thresholdLabel = document.createElement("label");
-    thresholdLabel.className = "settings-label";
-    const thresholdLabelText = document.createElement("span");
-    thresholdLabelText.textContent = "Injection Threshold (seconds):";
-    thresholdLabel.appendChild(
-      createTooltipButton(
+    const title = document.createElement("h1");
+    title.className = "chud-title";
+    title.textContent = "SETTINGS";
+    header.appendChild(title);
+
+    const subtitle = document.createElement("div");
+    subtitle.className = "chud-subtitle";
+    subtitle.textContent = "Pengu Loader · Configuration";
+    header.appendChild(subtitle);
+
+    card.appendChild(header);
+
+    // ---- Body ----
+    const body = document.createElement("div");
+    body.className = "chud-body";
+    card.appendChild(body);
+
+    function sectionLabel(text) {
+      const row = document.createElement("div");
+      row.className = "chud-section-label-row";
+      const label = document.createElement("span");
+      label.className = "chud-section-label";
+      label.textContent = text;
+      const rule2 = document.createElement("span");
+      rule2.className = "chud-section-rule";
+      row.appendChild(label);
+      row.appendChild(rule2);
+      return row;
+    }
+
+    // ---- Section 1: TIMING (diamond sliders) ----
+    const timingSection = document.createElement("div");
+    timingSection.className = "chud-section";
+    timingSection.appendChild(sectionLabel("Timing"));
+
+    const slidersWrap = document.createElement("div");
+    slidersWrap.className = "chud-sliders";
+
+    // Real functional bounds: the backend clamps threshold to [0.3, 2.0] and the auto-resume
+    // timeout to [20, 180] (see saveSettings()/renderDiagnosticsDialog()'s "at max" checks). The
+    // slider ranges intentionally match those clamps rather than a wider on-paper range, so a
+    // value the user picks in the UI is never silently bumped after Save.
+    const thresholdSlider = createDiamondSlider({
+      idBase: "threshold",
+      name: "Injection Threshold",
+      tooltip:
         "Injection threshold is the time window during which the app considers your last hovered skin as the one to inject.\n\nFor example, if your injection threshold is set to 1 second, whichever skin you were hovering 1 second before champ select ends will be the one injected.\n\nIf your PC or connection is on the slower side, you may need to fine-tune this value.",
-        "Injection threshold info"
-      )
-    );
-    thresholdLabel.appendChild(thresholdLabelText);
-    thresholdSection.appendChild(thresholdLabel);
+      min: 0.3,
+      max: 2.0,
+      step: 0.05,
+      value: currentSettings.threshold,
+      format: (v) => `${v.toFixed(2)} s`,
+      toStoredValue: (v) => Math.round(v * 100),
+      fromStoredValue: (v) => v / 100,
+    });
+    slidersWrap.appendChild(thresholdSlider.row);
 
-    const thresholdValue = document.createElement("span");
-    thresholdValue.className = "settings-value";
-    thresholdValue.id = "threshold-value";
-    thresholdValue.textContent = "0.50 s";
-    thresholdLabel.appendChild(thresholdValue);
-
-    // Create slider container with League of Legends style
-    const thresholdSliderContainer = document.createElement("div");
-    thresholdSliderContainer.className = "lol-settings-slider-component";
-    thresholdSliderContainer.style.display = "flex";
-    thresholdSliderContainer.style.alignItems = "center";
-    thresholdSliderContainer.style.width = "100%";
-    thresholdSliderContainer.style.marginTop = "10px";
-
-    const thresholdSliderWrapper = document.createElement("div");
-    thresholdSliderWrapper.className = "lol-settings-slider";
-    thresholdSliderWrapper.style.width = "400px";
-    thresholdSliderWrapper.style.height = "30px";
-    thresholdSliderWrapper.style.position = "relative";
-
-    const thresholdSlider = document.createElement("input");
-    thresholdSlider.type = "range";
-    thresholdSlider.id = "threshold-slider";
-    // Minimum Injection Threshold: 300ms (0.30s)
-    thresholdSlider.min = "30";
-    thresholdSlider.max = "200";
-    thresholdSlider.value = "50";
-    thresholdSlider.style.width = "100%";
-    thresholdSlider.style.height = "100%";
-    thresholdSlider.style.opacity = "0";
-    thresholdSlider.style.cursor = "pointer";
-    thresholdSlider.style.position = "absolute";
-    thresholdSlider.style.zIndex = "2";
-
-    const thresholdSliderUI = document.createElement("div");
-    thresholdSliderUI.className = "lol-uikit-slider-wrapper horizontal";
-    thresholdSliderUI.style.position = "relative";
-    thresholdSliderUI.style.height = "30px";
-    thresholdSliderUI.style.width = "100%";
-
-    const thresholdSliderBase = document.createElement("div");
-    thresholdSliderBase.className = "lol-uikit-slider-base";
-    thresholdSliderBase.style.height = "30px";
-    thresholdSliderBase.style.width = "100%";
-    thresholdSliderBase.style.position = "absolute";
-
-    const thresholdTrack = document.createElement("div");
-    thresholdTrack.className = "lol-uikit-slider-base-track";
-    thresholdTrack.style.position = "absolute";
-    thresholdTrack.style.top = "14px";
-    thresholdTrack.style.left = "0";
-    thresholdTrack.style.width = "calc(100% - 2.5px)";
-    thresholdTrack.style.height = "2px";
-    thresholdTrack.style.background = "#131a2b";
-
-    // Calculate initial position for threshold slider (value 50, min 30, max 200)
-    const thresholdInitialValue = 50;
-    const thresholdMin = 30;
-    const thresholdMax = 200;
-    const thresholdPercentage = ((thresholdInitialValue - thresholdMin) / (thresholdMax - thresholdMin)) * 100;
-    const thresholdSliderWidth = 400;
-    const thresholdButtonWidth = 30;
-    const thresholdMaxPosition = thresholdSliderWidth - thresholdButtonWidth; // 370px max
-    const thresholdInitialPosition = (thresholdPercentage / 100) * thresholdMaxPosition;
-
-    const thresholdFill = document.createElement("div");
-    thresholdFill.className = "lol-uikit-slider-fill";
-    thresholdFill.style.width = `${thresholdInitialPosition}px`;
-    thresholdFill.style.height = "2px";
-    thresholdFill.style.background = "linear-gradient(to left, #173544, #0d1420)";
-    thresholdFill.style.position = "absolute";
-    thresholdFill.style.top = "13px";
-    thresholdFill.style.border = "thin solid #070b16";
-    thresholdFill.style.transition = "width 0.1s ease-out, background 0.2s ease";
-
-    const thresholdButton = document.createElement("div");
-    thresholdButton.className = "lol-uikit-slider-button";
-    thresholdButton.style.left = `${thresholdInitialPosition}px`;
-    thresholdButton.style.width = "30px";
-    thresholdButton.style.height = "30px";
-    thresholdButton.style.background = "url('/fe/lol-uikit/images/slider-btn.png') no-repeat top left";
-    thresholdButton.style.backgroundSize = "100%";
-    thresholdButton.style.position = "absolute";
-    thresholdButton.style.top = "0px";
-    thresholdButton.style.cursor = "pointer";
-    thresholdButton.style.transition = "left 0.1s ease-out, background-position 0.2s ease";
-
-    thresholdSliderBase.appendChild(thresholdTrack);
-    thresholdSliderBase.appendChild(thresholdFill);
-    thresholdSliderBase.appendChild(thresholdButton);
-    thresholdSliderUI.appendChild(thresholdSliderBase);
-    thresholdSliderWrapper.appendChild(thresholdSlider);
-    thresholdSliderWrapper.appendChild(thresholdSliderUI);
-    thresholdSliderContainer.appendChild(thresholdSliderWrapper);
-    thresholdSection.appendChild(thresholdSliderContainer);
-
-    // Benchmark info placeholder (populated when diagnostics data arrives)
+    // Benchmark hint line (existing diagnostics feature — keep wired to renderThresholdBenchmark()).
     const benchmarkInfo = document.createElement("div");
     benchmarkInfo.id = "chud-threshold-benchmark";
-    benchmarkInfo.style.marginTop = "6px";
-    benchmarkInfo.style.fontSize = "11px";
-    benchmarkInfo.style.fontFamily = "'JetBrains Mono', monospace";
-    benchmarkInfo.style.color = "#7a93a8";
-    thresholdSection.appendChild(benchmarkInfo);
+    benchmarkInfo.style.cssText = "font-family:'Barlow',sans-serif; font-size:11px; color:#9a9ac8;";
+    slidersWrap.appendChild(benchmarkInfo);
 
-    form.appendChild(thresholdSection);
-
-    // Monitor auto-resume timeout section
-    const timeoutSection = document.createElement("div");
-    timeoutSection.className = "settings-section";
-
-    const timeoutLabel = document.createElement("label");
-    timeoutLabel.className = "settings-label";
-    const timeoutLabelText = document.createElement("span");
-    timeoutLabelText.textContent = "Monitor Auto-Resume Timeout (seconds):";
-    timeoutLabel.appendChild(
-      createTooltipButton(
+    const timeoutSlider = createDiamondSlider({
+      idBase: "timeout",
+      name: "Monitor Auto-Resume Timeout",
+      tooltip:
         "Auto-resume is a safety feature.\n\nIf the injection process takes longer than the value you set, the app will automatically cancel the injection and let the game start normally.\n\nThis prevents the injection from looping and blocking the game from launching.\n\nIf you use a lot of custom mods, you may need to adjust this value.",
-        "Auto-resume info"
-      )
-    );
-    timeoutLabel.appendChild(timeoutLabelText);
-    timeoutSection.appendChild(timeoutLabel);
+      min: 20,
+      max: 180,
+      step: 5,
+      value: currentSettings.monitorAutoResumeTimeout,
+      format: (v) => `${Math.round(v)} s`,
+      toStoredValue: (v) => Math.round(v),
+      fromStoredValue: (v) => v,
+    });
+    slidersWrap.appendChild(timeoutSlider.row);
 
-    const timeoutValue = document.createElement("span");
-    timeoutValue.className = "settings-value";
-    timeoutValue.id = "timeout-value";
-    timeoutValue.textContent = "60 s";
-    timeoutLabel.appendChild(timeoutValue);
+    timingSection.appendChild(slidersWrap);
+    body.appendChild(timingSection);
 
-    // Create slider container with League of Legends style
-    const timeoutSliderContainer = document.createElement("div");
-    timeoutSliderContainer.className = "lol-settings-slider-component";
-    timeoutSliderContainer.style.display = "flex";
-    timeoutSliderContainer.style.alignItems = "center";
-    timeoutSliderContainer.style.width = "100%";
-    timeoutSliderContainer.style.marginTop = "10px";
+    // ---- Section 2: STARTUP ----
+    const startupSection = document.createElement("div");
+    startupSection.className = "chud-section";
+    startupSection.appendChild(sectionLabel("Startup"));
 
-    const timeoutSliderWrapper = document.createElement("div");
-    timeoutSliderWrapper.className = "lol-settings-slider";
-    timeoutSliderWrapper.style.width = "400px";
-    timeoutSliderWrapper.style.height = "30px";
-    timeoutSliderWrapper.style.position = "relative";
+    const startupRow = document.createElement("div");
+    startupRow.className = "chud-startup-row";
 
-    const timeoutSlider = document.createElement("input");
-    timeoutSlider.type = "range";
-    timeoutSlider.id = "timeout-slider";
-    // Minimum Auto-Resume Timeout: 20s
-    timeoutSlider.min = "20";
-    timeoutSlider.max = "180";
-    timeoutSlider.value = "60";
-    timeoutSlider.style.width = "100%";
-    timeoutSlider.style.height = "100%";
-    timeoutSlider.style.opacity = "0";
-    timeoutSlider.style.cursor = "pointer";
-    timeoutSlider.style.position = "absolute";
-    timeoutSlider.style.zIndex = "2";
+    const startupCopy = document.createElement("div");
+    startupCopy.className = "chud-startup-copy";
+    const startupTitle = document.createElement("div");
+    startupTitle.className = "chud-startup-title";
+    startupTitle.textContent = "Start automatically with Windows";
+    const startupHint = document.createElement("div");
+    startupHint.className = "chud-startup-hint";
+    startupHint.textContent = "Launch Pengu Loader when your PC starts";
+    startupCopy.appendChild(startupTitle);
+    startupCopy.appendChild(startupHint);
+    startupRow.appendChild(startupCopy);
 
-    const timeoutSliderUI = document.createElement("div");
-    timeoutSliderUI.className = "lol-uikit-slider-wrapper horizontal";
-    timeoutSliderUI.style.position = "relative";
-    timeoutSliderUI.style.height = "30px";
-    timeoutSliderUI.style.width = "100%";
+    // Kept as id="autostart-checkbox" (with a boolean `.checked` property) so saveSettings()/
+    // updateSettingsForm() keep reading/writing it exactly as before.
+    const autostartToggle = document.createElement("button");
+    autostartToggle.type = "button";
+    autostartToggle.id = "autostart-checkbox";
+    autostartToggle.className = "chud-toggle";
+    autostartToggle.title = "Toggle auto-start";
+    autostartToggle.setAttribute("aria-pressed", "false");
+    autostartToggle.checked = false;
+    const autostartKnob = document.createElement("span");
+    autostartKnob.className = "chud-toggle-knob";
+    autostartToggle.appendChild(autostartKnob);
+    autostartToggle.addEventListener("click", () => {
+      autostartToggle.checked = !autostartToggle.checked;
+      autostartToggle.classList.toggle("on", autostartToggle.checked);
+      autostartToggle.setAttribute("aria-pressed", String(autostartToggle.checked));
+    });
+    startupRow.appendChild(autostartToggle);
+    startupSection.appendChild(startupRow);
 
-    const timeoutSliderBase = document.createElement("div");
-    timeoutSliderBase.className = "lol-uikit-slider-base";
-    timeoutSliderBase.style.height = "30px";
-    timeoutSliderBase.style.width = "100%";
-    timeoutSliderBase.style.position = "absolute";
+    // Game path
+    const pathGroup = document.createElement("div");
+    pathGroup.className = "chud-path-group";
+    const pathLabel = document.createElement("div");
+    pathLabel.className = "chud-path-label";
+    pathLabel.textContent = "League of Legends Game Path";
+    pathGroup.appendChild(pathLabel);
 
-    const timeoutTrack = document.createElement("div");
-    timeoutTrack.className = "lol-uikit-slider-base-track";
-    timeoutTrack.style.position = "absolute";
-    timeoutTrack.style.top = "14px";
-    timeoutTrack.style.left = "0";
-    timeoutTrack.style.width = "calc(100% - 2.5px)";
-    timeoutTrack.style.height = "2px";
-    timeoutTrack.style.background = "#131a2b";
-
-    const timeoutFill = document.createElement("div");
-    timeoutFill.className = "lol-uikit-slider-fill";
-    timeoutFill.style.width = "0px"; // Initial position for min value
-    timeoutFill.style.height = "2px";
-    timeoutFill.style.background = "linear-gradient(to left, #173544, #0d1420)";
-    timeoutFill.style.position = "absolute";
-    timeoutFill.style.top = "13px";
-    timeoutFill.style.border = "thin solid #070b16";
-    timeoutFill.style.transition = "width 0.1s ease-out, background 0.2s ease";
-
-    const timeoutButton = document.createElement("div");
-    timeoutButton.className = "lol-uikit-slider-button";
-    timeoutButton.style.left = "0px"; // Initial position
-    timeoutButton.style.width = "30px";
-    timeoutButton.style.height = "30px";
-    timeoutButton.style.background = "url('/fe/lol-uikit/images/slider-btn.png') no-repeat top left";
-    timeoutButton.style.backgroundSize = "100%";
-    timeoutButton.style.position = "absolute";
-    timeoutButton.style.top = "0px";
-    timeoutButton.style.cursor = "pointer";
-    timeoutButton.style.transition = "left 0.1s ease-out, background-position 0.2s ease";
-
-    timeoutSliderBase.appendChild(timeoutTrack);
-    timeoutSliderBase.appendChild(timeoutFill);
-    timeoutSliderBase.appendChild(timeoutButton);
-    timeoutSliderUI.appendChild(timeoutSliderBase);
-    timeoutSliderWrapper.appendChild(timeoutSlider);
-    timeoutSliderWrapper.appendChild(timeoutSliderUI);
-    timeoutSliderContainer.appendChild(timeoutSliderWrapper);
-    timeoutSection.appendChild(timeoutSliderContainer);
-    form.appendChild(timeoutSection);
-
-    // Autostart section
-    const autostartSection = document.createElement("div");
-    autostartSection.className = "settings-section";
-
-    const autostartLabel = document.createElement("label");
-    autostartLabel.className = "settings-label";
-    autostartLabel.textContent = "Start automatically with Windows:";
-    autostartSection.appendChild(autostartLabel);
-
-    const autostartWrapper = document.createElement("div");
-    autostartWrapper.className = "settings-checkbox-wrapper";
-
-    const autostartCheckbox = document.createElement("input");
-    autostartCheckbox.type = "checkbox";
-    autostartCheckbox.className = "settings-checkbox";
-    autostartCheckbox.id = "autostart-checkbox";
-    autostartWrapper.appendChild(autostartCheckbox);
-
-    const autostartText = document.createElement("span");
-    autostartText.textContent = "Enable auto-start";
-    autostartWrapper.appendChild(autostartText);
-    autostartSection.appendChild(autostartWrapper);
-    form.appendChild(autostartSection);
-
-    // Game path section
-    const pathSection = document.createElement("div");
-    pathSection.className = "settings-section";
-
-    const pathLabel = document.createElement("label");
-    pathLabel.className = "settings-label";
-    pathLabel.textContent = "League of Legends Game Path:";
-    pathSection.appendChild(pathLabel);
-
-    const pathInputWrapper = document.createElement("div");
-    pathInputWrapper.style.display = "flex";
-    pathInputWrapper.style.alignItems = "center";
+    const pathInputRow = document.createElement("div");
+    pathInputRow.className = "chud-path-input-row";
 
     const pathInput = document.createElement("input");
     pathInput.type = "text";
-    pathInput.className = "settings-input";
     pathInput.id = "game-path-input";
     pathInput.placeholder = "C:\\Riot Games\\League of Legends\\Game";
+    pathInput.spellcheck = false;
     pathInput.addEventListener("input", () => {
       updatePathStatus();
     });
-    pathInputWrapper.appendChild(pathInput);
+    pathInputRow.appendChild(pathInput);
 
     const pathStatus = document.createElement("span");
-    pathStatus.className = "settings-status";
     pathStatus.id = "path-status";
     pathStatus.textContent = "";
-    pathInputWrapper.appendChild(pathStatus);
-    pathSection.appendChild(pathInputWrapper);
-    form.appendChild(pathSection);
+    pathInputRow.appendChild(pathStatus);
 
-    // Add custom mods dropdown
-    const modsDropdownContainer = document.createElement("div");
-    modsDropdownContainer.style.marginTop = "8px";
-    modsDropdownContainer.style.width = "100%";
+    const browseBtn = document.createElement("button");
+    browseBtn.type = "button";
+    browseBtn.className = "chud-browse-btn";
+    browseBtn.title = "Locate game folder";
+    browseBtn.innerHTML =
+      '<svg width="18" height="18" viewBox="0 0 24 24" style="display:block;"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" style="fill:none; stroke:currentColor; stroke-width:1.7px; stroke-linecap:round; stroke-linejoin:round;"></path></svg>';
+    browseBtn.addEventListener("click", () => {
+      // No Tauri folder-picker dialog is reachable from inside the League client webview, so the
+      // browse button focuses the path input and re-runs validation on whatever is already there.
+      pathInput.focus();
+      const val = pathInput.value.trim();
+      if (val) requestPathValidation(val);
+    });
+    pathInputRow.appendChild(browseBtn);
 
-    const modsDropdown = document.createElement("lol-uikit-framed-dropdown");
-    modsDropdown.id = "add-custom-mods-dropdown";
-    modsDropdown.className = "lol-publishing-locale-preference-dropdown";
-    modsDropdown.setAttribute("tabindex", "0");
-    modsDropdown.style.width = "100%";
+    pathGroup.appendChild(pathInputRow);
+    startupSection.appendChild(pathGroup);
+    body.appendChild(startupSection);
 
-    // Add placeholder option for header display (hidden in dropdown menu)
-    const placeholderOption = document.createElement("lol-uikit-dropdown-option");
-    placeholderOption.setAttribute("slot", "lol-uikit-dropdown-option");
-    placeholderOption.setAttribute("value", "");
-    placeholderOption.className = "framed-dropdown-type placeholder-option";
-    placeholderOption.textContent = "Add custom mods";
-    placeholderOption.style.color = "#7d7d7d";
-    placeholderOption.style.opacity = "0.7";
-    placeholderOption.style.pointerEvents = "none";
-    placeholderOption.style.cursor = "default";
-    placeholderOption.setAttribute("selected", ""); // Show in header
-    // Prevent any click events on the placeholder
-    placeholderOption.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-      return false;
-    }, true); // Use capture phase to catch early
-    modsDropdown.appendChild(placeholderOption);
+    // ---- Section 3: MODS & TOOLS ----
+    const modsSection = document.createElement("div");
+    modsSection.className = "chud-section";
+    modsSection.appendChild(sectionLabel("Mods & Tools"));
+
+    // "Add custom mods" expander — drives the same category -> champion -> skin picker flow as
+    // before (handleCategorySelection/openChampionSelection/openSkinSelection are unchanged).
+    const expander = document.createElement("div");
+    expander.className = "chud-expander";
+
+    const expanderHead = document.createElement("button");
+    expanderHead.type = "button";
+    expanderHead.className = "chud-expander-head";
+
+    const expanderHeadLeft = document.createElement("span");
+    expanderHeadLeft.className = "chud-expander-head-left";
+    const expanderIcon = document.createElement("span");
+    expanderIcon.className = "chud-expander-icon";
+    expanderIcon.innerHTML =
+      '<svg width="18" height="18" viewBox="0 0 24 24" style="display:block;"><path d="M12 5v14M5 12h14" style="fill:none; stroke:currentColor; stroke-width:1.7px; stroke-linecap:round;"></path></svg>';
+    const expanderName = document.createElement("span");
+    expanderName.className = "chud-expander-name";
+    expanderName.textContent = "Add custom mods";
+    expanderHeadLeft.appendChild(expanderIcon);
+    expanderHeadLeft.appendChild(expanderName);
+
+    const expanderChevron = document.createElement("span");
+    expanderChevron.className = "chud-expander-chevron";
+    expanderChevron.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 24 24" style="display:block;"><path d="M6 9l6 6 6-6" style="fill:none; stroke:currentColor; stroke-width:1.7px; stroke-linecap:round; stroke-linejoin:round;"></path></svg>';
+
+    expanderHead.appendChild(expanderHeadLeft);
+    expanderHead.appendChild(expanderChevron);
+    expander.appendChild(expanderHead);
 
     const categories = [
       { id: "skins", name: "Skins" },
@@ -1872,543 +1792,410 @@
       { id: "others", name: "Others" },
     ];
 
-    categories.forEach((category) => {
-      const option = document.createElement("lol-uikit-dropdown-option");
-      option.setAttribute("slot", "lol-uikit-dropdown-option");
-      option.setAttribute("value", category.id);
-      option.className = "framed-dropdown-type";
-      option.textContent = category.name;
-      modsDropdown.appendChild(option);
-    });
+    let expanderBody = null;
+    expanderHead.addEventListener("click", () => {
+      const isOpen = expanderChevron.classList.toggle("open");
+      if (isOpen) {
+        if (!expanderBody) {
+          expanderBody = document.createElement("div");
+          expanderBody.className = "chud-expander-body";
 
-    // Function to aggressively remove focus and glow effects
-    const removeFocusAndGlow = () => {
-      // Blur the dropdown element
-      if (document.activeElement === modsDropdown || modsDropdown.contains(document.activeElement)) {
-        modsDropdown.blur();
-      }
+          const hint = document.createElement("div");
+          hint.className = "chud-expander-hint";
+          hint.textContent = "Choose what kind of mod you want to add";
+          expanderBody.appendChild(hint);
 
-      // Blur any focused elements within the dropdown
-      const focusedElement = modsDropdown.querySelector(':focus');
-      if (focusedElement) {
-        focusedElement.blur();
-      }
+          categories.forEach((category) => {
+            const row = document.createElement("div");
+            row.className = "chud-mod-row";
+            const bullet = document.createElement("span");
+            bullet.className = "chud-mod-bullet";
+            const name = document.createElement("span");
+            name.className = "chud-mod-name";
+            name.textContent = category.name;
+            row.appendChild(bullet);
+            row.appendChild(name);
+            row.addEventListener("click", () => {
+              handleCategorySelection(category.id);
+            });
+            expanderBody.appendChild(row);
+          });
 
-      // Remove focus-related attributes and classes
-      modsDropdown.removeAttribute('tabindex');
-      modsDropdown.setAttribute('tabindex', '0');
-
-      // Blur elements in shadow DOM if accessible
-      const shadowRoot = modsDropdown.shadowRoot;
-      if (shadowRoot) {
-        const shadowFocused = shadowRoot.activeElement;
-        if (shadowFocused) {
-          shadowFocused.blur();
+          expander.appendChild(expanderBody);
         }
-        // Remove focus from all focusable elements in shadow DOM
-        shadowRoot.querySelectorAll('*').forEach(el => {
-          if (el === shadowRoot.activeElement || el.matches(':focus')) {
-            el.blur();
-          }
-        });
-      }
-
-      // Force focus to body or another element to ensure dropdown loses focus
-      if (document.body) {
-        document.body.focus();
-      }
-      // Remove focus completely
-      if (document.activeElement && document.activeElement !== document.body) {
-        document.activeElement.blur();
-      }
-    };
-
-    // Function to reset dropdown to placeholder and close it
-    const resetDropdown = () => {
-      // Remove active class to close dropdown
-      modsDropdown.classList.remove("active");
-      // Remove selected from all category options
-      modsDropdown.querySelectorAll('lol-uikit-dropdown-option[value!=""]').forEach(opt => {
-        opt.removeAttribute("selected");
-      });
-      // Reset to placeholder option for header display
-      const placeholder = modsDropdown.querySelector('.placeholder-option');
-      if (placeholder) {
-        placeholder.setAttribute("selected", "");
-        // Force the dropdown to use placeholder value
-        if (modsDropdown.setAttribute) {
-          modsDropdown.setAttribute("value", "");
-        }
-      }
-
-      // Aggressively remove focus and glow effects
-      removeFocusAndGlow();
-
-      // Force reset again after a short delay to catch any framework updates
-      setTimeout(() => {
-        const placeholder = modsDropdown.querySelector('.placeholder-option');
-        if (placeholder && !placeholder.hasAttribute('selected')) {
-          placeholder.setAttribute("selected", "");
-        }
-        modsDropdown.querySelectorAll('lol-uikit-dropdown-option[value!=""]').forEach(opt => {
-          opt.removeAttribute("selected");
-        });
-        // Remove focus again after framework updates
-        removeFocusAndGlow();
-      }, 10);
-    };
-
-    // Handle dropdown selection change - prevent showing selected value
-    modsDropdown.addEventListener("change", (e) => {
-      const selectedValue = e.target.value || e.detail?.value;
-      if (selectedValue) {
-        handleCategorySelection(selectedValue);
-        // Immediately reset to placeholder before UI updates
-        resetDropdown();
+        expanderBody.style.display = "flex";
+      } else if (expanderBody) {
+        expanderBody.style.display = "none";
       }
     });
 
-    // Handle click on options - prevent showing selected value
-    modsDropdown.querySelectorAll('lol-uikit-dropdown-option').forEach((option) => {
-      option.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const categoryId = option.getAttribute("value");
-        // Ignore placeholder option (empty value)
-        if (categoryId) {
-          // Prevent the option from being selected
-          option.removeAttribute("selected");
-          handleCategorySelection(categoryId);
-          // Immediately reset to placeholder
-          resetDropdown();
-          // Remove focus immediately and after delays
-          setTimeout(() => removeFocusAndGlow(), 0);
-          setTimeout(() => removeFocusAndGlow(), 50);
-          setTimeout(() => removeFocusAndGlow(), 100);
-          setTimeout(() => removeFocusAndGlow(), 200);
-        }
-      }, true); // Use capture phase to intercept early
-    });
+    modsSection.appendChild(expander);
 
-    // Watch for any selected attribute changes and reset to placeholder
-    const observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.type === 'attributes' && mutation.attributeName === 'selected') {
-          const target = mutation.target;
-          // If a category option (not placeholder) gets selected, reset it
-          if (target.getAttribute('value') && target.getAttribute('value') !== '') {
-            const placeholder = modsDropdown.querySelector('.placeholder-option');
-            if (placeholder && !placeholder.hasAttribute('selected')) {
-              // Remove selected from category option
-              target.removeAttribute('selected');
-              // Set placeholder as selected
-              placeholder.setAttribute('selected', '');
-            }
-          }
-        }
-      });
-    });
+    // Tool grid
+    const toolGrid = document.createElement("div");
+    toolGrid.className = "chud-tool-grid";
 
-    // Observe all dropdown options for selected attribute changes
-    modsDropdown.querySelectorAll('lol-uikit-dropdown-option').forEach((option) => {
-      observer.observe(option, { attributes: true, attributeFilter: ['selected'] });
-    });
+    function toolCard(id, iconSvg, label, onClick) {
+      const tCard = document.createElement("div");
+      tCard.id = id;
+      tCard.className = "chud-tool-card";
+      const icon = document.createElement("span");
+      icon.className = "chud-tool-icon";
+      icon.innerHTML = iconSvg;
+      const lbl = document.createElement("span");
+      lbl.className = "chud-tool-label";
+      lbl.textContent = label;
+      tCard.appendChild(icon);
+      tCard.appendChild(lbl);
+      tCard.addEventListener("click", onClick);
+      return tCard;
+    }
 
-    modsDropdownContainer.appendChild(modsDropdown);
-    form.appendChild(modsDropdownContainer);
+    const DOC_ICON =
+      '<svg width="24" height="24" viewBox="0 0 24 24" style="display:block;"><path d="M13 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8l-6-5z" style="fill:none; stroke:currentColor; stroke-width:1.6px; stroke-linecap:round; stroke-linejoin:round;"></path><path d="M13 3v5h5" style="fill:none; stroke:currentColor; stroke-width:1.6px; stroke-linecap:round; stroke-linejoin:round;"></path></svg>';
+    const GEAR_ICON =
+      '<svg width="24" height="24" viewBox="0 0 24 24" style="display:block;"><circle cx="12" cy="12" r="3" style="fill:none; stroke:currentColor; stroke-width:1.6px;"></circle><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1l-.4-2.5H9.1l-.4 2.5a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4L4.6 11a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.8 1.7 1l.4 2.5h4.8l.4-2.5c.6-.2 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6z" style="fill:none; stroke:currentColor; stroke-width:1.3px; stroke-linejoin:round;"></path></svg>';
+    const EXT_ICON =
+      '<svg width="24" height="24" viewBox="0 0 24 24" style="display:block;"><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6" style="fill:none; stroke:currentColor; stroke-width:1.6px; stroke-linecap:round; stroke-linejoin:round;"></path><path d="M15 3h6v6M10 14 21 3" style="fill:none; stroke:currentColor; stroke-width:1.6px; stroke-linecap:round; stroke-linejoin:round;"></path></svg>';
 
-    // Inject shadow DOM styles to override :host .ui-dropdown color
-    let retryCount = 0;
-    const MAX_RETRIES = 20;
-    const injectShadowStyles = () => {
-      const root = modsDropdown.shadowRoot;
-      if (!root) {
-        // Shadow root might not be ready yet, try again (up to MAX_RETRIES times)
-        if (retryCount < MAX_RETRIES) {
-          retryCount++;
-          setTimeout(injectShadowStyles, 50);
-        }
-        return;
-      }
+    toolGrid.appendChild(toolCard("logs-folder-button", DOC_ICON, "Open Logs Folder", () => openLogsFolder()));
+    toolGrid.appendChild(toolCard("troubleshoot-button", GEAR_ICON, "Troubleshooting", () => openDiagnosticsDialog()));
+    toolGrid.appendChild(toolCard("pengu-ui-button", EXT_ICON, "Open Pengu Loader UI", () => openPenguLoaderUI()));
 
-      // Check if style already injected
-      if (root.querySelector('style[data-chud-dropdown-color]')) {
-        return;
-      }
+    modsSection.appendChild(toolGrid);
+    body.appendChild(modsSection);
 
-      const rootStyle = document.createElement("style");
-      rootStyle.setAttribute("data-chud-dropdown-color", "true");
-      rootStyle.textContent = `
-        :host .ui-dropdown {
-          color: #7ceeff !important;
-          font-size: 12px !important;
-          font-weight: normal !important;
-          line-height: 16px !important;
-          letter-spacing: 0.025em !important;
-          -webkit-font-smoothing: subpixel-antialiased !important;
-        }
-        
-        /* Remove all glow effects when not focused */
-        :host:not(:focus):not(:focus-within) .ui-dropdown,
-        :host:not(:focus):not(:focus-within) * {
-          filter: none !important;
-          -webkit-filter: none !important;
-          box-shadow: none !important;
-          text-shadow: none !important;
-          outline: none !important;
-        }
-      `;
-      root.appendChild(rootStyle);
-    };
+    // ---- Footer ----
+    const footer = document.createElement("div");
+    footer.className = "chud-footer";
 
-    // Try to inject styles immediately and retry if shadow root isn't ready
-    injectShadowStyles();
-
-    // Remove focus/shine effect after clicking - use the comprehensive function
-    modsDropdown.addEventListener("click", (e) => {
-      // Only remove focus if clicking outside of options (on the button itself)
-      if (!e.target.closest('lol-uikit-dropdown-option')) {
-        setTimeout(() => removeFocusAndGlow(), 100);
-      }
-    });
-
-    // Remove focus when mouse leaves the dropdown area
-    modsDropdown.addEventListener("mouseleave", () => {
-      // Only remove focus if dropdown is not active/open
-      if (!modsDropdown.classList.contains('active')) {
-        removeFocusAndGlow();
-      }
-    });
-
-    // Also blur when dropdown closes
-    modsDropdown.addEventListener("change", () => {
-      setTimeout(() => removeFocusAndGlow(), 50);
-      setTimeout(() => removeFocusAndGlow(), 150);
-    });
-
-    // Watch for when dropdown closes (active class removed) and remove focus
-    const activeObserver = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-          // If active class was removed, ensure focus is removed
-          if (!modsDropdown.classList.contains('active')) {
-            removeFocusAndGlow();
-            // Also remove focus after a delay to catch any late updates
-            setTimeout(() => removeFocusAndGlow(), 50);
-            setTimeout(() => removeFocusAndGlow(), 150);
-          }
-        }
-      });
-    });
-    activeObserver.observe(modsDropdown, { attributes: true, attributeFilter: ['class'] });
-
-    // Open logs folder button
-    const logsButton = document.createElement("lol-uikit-flat-button-secondary");
-    logsButton.id = "logs-folder-button";
-    logsButton.textContent = "Open Logs Folder";
-    logsButton.style.marginTop = "8px";
-    logsButton.style.width = "100%";
-    logsButton.addEventListener("click", () => {
-      openLogsFolder();
-    });
-    form.appendChild(logsButton);
-
-    // Troubleshooting button (opens a small dialog with compact errors)
-    const troubleshootButton = document.createElement("lol-uikit-flat-button-secondary");
-    troubleshootButton.id = "troubleshoot-button";
-    troubleshootButton.textContent = "Troubleshooting";
-    troubleshootButton.style.marginTop = "8px";
-    troubleshootButton.style.width = "100%";
-    troubleshootButton.addEventListener("click", () => {
-      openDiagnosticsDialog();
-    });
-    form.appendChild(troubleshootButton);
-
-
-    // Open Pengu Loader UI button
-    const penguUIButton = document.createElement("lol-uikit-flat-button-secondary");
-    penguUIButton.id = "pengu-ui-button";
-    penguUIButton.textContent = "Open Pengu Loader UI";
-    penguUIButton.style.marginTop = "8px";
-    penguUIButton.style.width = "100%";
-    penguUIButton.addEventListener("click", () => {
-      openPenguLoaderUI();
-    });
-    form.appendChild(penguUIButton);
-
-    // Save button (moved to last position)
-    const saveButton = document.createElement("lol-uikit-flat-button-secondary");
-    saveButton.id = "save-button";
-    saveButton.textContent = "Save";
-    saveButton.style.marginTop = "8px";
-    saveButton.style.width = "21%";
-    saveButton.addEventListener("click", () => {
-      saveSettings();
-    });
-    form.appendChild(saveButton);
-
-    // Links section
-    const linksSection = document.createElement("div");
-    linksSection.className = "settings-links";
-
-    const discordLink = document.createElement("a");
-    discordLink.className = "settings-link";
-    discordLink.href = DISCORD_URL;
-    discordLink.target = "_blank";
-    discordLink.textContent = "Discord";
-    linksSection.appendChild(discordLink);
+    const footerLinks = document.createElement("div");
+    footerLinks.className = "chud-footer-links";
 
     const githubLink = document.createElement("a");
-    githubLink.className = "settings-link";
+    githubLink.className = "chud-github-link";
     githubLink.href = GITHUB_URL;
     githubLink.target = "_blank";
-    githubLink.textContent = "GitHub";
-    linksSection.appendChild(githubLink);
+    githubLink.rel = "noopener noreferrer";
+    githubLink.innerHTML =
+      '<span class="chud-footer-icon"><svg width="16" height="16" viewBox="0 0 24 24" style="display:block;"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4" style="fill:none; stroke:currentColor; stroke-width:1.7px; stroke-linecap:round; stroke-linejoin:round;"></path></svg></span><span>GitHub</span>';
+    footerLinks.appendChild(githubLink);
 
-    form.appendChild(linksSection);
+    const discordLink = document.createElement("a");
+    discordLink.className = "chud-discord-link";
+    discordLink.href = DISCORD_URL;
+    discordLink.target = "_blank";
+    discordLink.rel = "noopener noreferrer";
+    discordLink.title = "Discord";
+    discordLink.innerHTML =
+      '<span class="chud-footer-icon"><svg width="16" height="16" viewBox="0 0 24 24" style="display:block;"><circle cx="8" cy="12" r="1.4" style="fill:currentColor;"></circle><circle cx="16" cy="12" r="1.4" style="fill:currentColor;"></circle><path d="M7 5.5c2.5-.8 7.5-.8 10 0 1.6 2 2.5 5 2.5 8.7-1.7 1.6-3.6 2.4-5.5 2.6l-.7-1.4c1-.3 1.9-.7 2.7-1.3-2.9 1.4-6.4 1.4-9.4 0 .8.6 1.7 1 2.7 1.3l-.6 1.4c-1.9-.2-3.8-1-5.5-2.6C4.5 10.5 5.4 7.5 7 5.5z" style="fill:none; stroke:currentColor; stroke-width:1.3px; stroke-linejoin:round;"></path></svg></span><span>Discord</span>';
+    footerLinks.appendChild(discordLink);
 
-    flyoutContent.appendChild(form);
-    flyoutFrame.appendChild(flyoutContent);
-    panel.appendChild(flyoutFrame);
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.id = "save-button";
+    saveBtn.className = "chud-save-btn";
 
-    // Setup slider interactions after form is added to DOM
-    setTimeout(() => {
-      setupSliderInteractions("threshold", thresholdSlider, thresholdButton, thresholdFill, thresholdValue, thresholdMin, thresholdMax, (value) => {
-        return parseFloat(value) / 100;
-      }, (value) => {
-        return `${value.toFixed(2)} s`;
-      });
+    const saveShimmer = document.createElement("span");
+    saveShimmer.className = "chud-save-shimmer";
+    saveBtn.appendChild(saveShimmer);
 
-      // Use the slider element's min/max so UI stays correct when limits change
-      setupSliderInteractions(
-        "timeout",
-        timeoutSlider,
-        timeoutButton,
-        timeoutFill,
-        timeoutValue,
-        parseInt(timeoutSlider.min || "20", 10),
-        parseInt(timeoutSlider.max || "180", 10),
-        (value) => {
-          return parseInt(value);
-      }, (value) => {
-        return `${value} s`;
-      });
-    }, 100);
+    const saveIconWrap = document.createElement("span");
+    saveIconWrap.id = "save-button-icon";
+    saveIconWrap.className = "chud-save-icon";
+    saveIconWrap.style.display = "none";
+    saveIconWrap.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 24 24" style="display:block;"><path d="M5 12l4.5 4.5L19 7" style="fill:none; stroke:currentColor; stroke-width:2.4px; stroke-linecap:round; stroke-linejoin:round;"></path></svg>';
+    saveBtn.appendChild(saveIconWrap);
+
+    const saveLabel = document.createElement("span");
+    saveLabel.id = "save-button-label";
+    saveLabel.textContent = "Save Changes";
+    saveBtn.appendChild(saveLabel);
+
+    saveBtn.addEventListener("click", () => saveSettings());
+
+    footer.appendChild(footerLinks);
+    footer.appendChild(saveBtn);
+    card.appendChild(footer);
 
     settingsPanel = panel;
 
-    // Recalculate position after adding to DOM to ensure accurate positioning
-    _flyoutRepositionTimer = setTimeout(() => {
-      // If panel was closed before this runs, do nothing.
-      if (!settingsPanel || !document.getElementById(PANEL_ID)) return;
-      const liveFlyout = document.getElementById(FLYOUT_ID);
-      if (!liveFlyout) return;
-      const updatedIconElement =
-        navItem.querySelector(".menu-item-icon") ||
-        navItem.querySelector(".menu-item-icon-wrapper") ||
-        navItem;
-      const updatedIconRect = updatedIconElement.getBoundingClientRect();
-      liveFlyout.style.top = `${updatedIconRect.bottom + 45}px`;
-      liveFlyout.style.left = `${updatedIconRect.left + updatedIconRect.width / 2
-        }px`;
-      liveFlyout.style.transform = "translateX(-50%)"; // Center the panel on the icon
-    }, 0);
+    // Paint the current in-memory values immediately; the "settings-data" response (already in
+    // flight below) will refresh everything again once it lands.
+    updateSettingsForm();
 
     // Request current settings and benchmark data
     requestSettings();
     requestDiagnostics();
   }
 
-  function setupSliderInteractions(sliderId, slider, button, fill, valueDisplay, min, max, valueConverter, displayFormatter) {
-    if (!slider || !button || !fill || !valueDisplay) return;
+  // ===== Neon Glass UI helpers (tooltip bubble, diamond slider, toast) =====
 
-    let isHovered = false;
-    let isDragging = false;
+  function getOrCreateGlobalTooltip() {
+    let el = document.getElementById("chud-global-tooltip");
+    if (el) return el;
 
-    const updateSlider = (rawValue) => {
-      const value = Math.max(min, Math.min(max, rawValue));
-      const percentage = ((value - min) / (max - min)) * 100;
-      const sliderWidth = 400;
-      const buttonWidth = 30;
-      const maxPosition = sliderWidth - buttonWidth; // 370px max to keep button within bounds
-      const buttonPosition = (percentage / 100) * maxPosition;
+    el = document.createElement("div");
+    el.id = "chud-global-tooltip";
+    el.setAttribute("role", "tooltip");
+    el.setAttribute("data-show", "false");
+    document.body.appendChild(el);
+    return el;
+  }
 
-      if (isDragging) {
-        button.style.transition = 'none';
-        fill.style.transition = 'none';
-      } else {
-        button.style.transition = 'left 0.1s ease-out';
-        fill.style.transition = 'width 0.1s ease-out, background 0.2s ease';
-      }
+  function hideGlobalTooltip() {
+    const el = document.getElementById("chud-global-tooltip");
+    if (!el) return;
+    el.setAttribute("data-show", "false");
+  }
 
-      button.style.left = `${buttonPosition}px`;
-      fill.style.width = `${buttonPosition}px`;
+  function showGlobalTooltipFor(anchorEl, text) {
+    const tooltip = getOrCreateGlobalTooltip();
+    tooltip.textContent = text;
+    tooltip.setAttribute("data-show", "true");
 
-      const convertedValue = valueConverter(value);
-      valueDisplay.textContent = displayFormatter(convertedValue);
-      slider.value = value;
+    // Measure after setting text
+    const margin = 10;
+    const rect = anchorEl.getBoundingClientRect();
+    const tRect = tooltip.getBoundingClientRect();
 
-      // Maintain hover effects after slider update
-      if (!isDragging) {
-        updateHoverEffects();
-      }
-    };
+    // Prefer above, fallback below if not enough room
+    const preferredTop = rect.top - tRect.height - margin;
+    const belowTop = rect.bottom + margin;
+    const useTop = preferredTop >= 8;
+    const top = useTop ? preferredTop : belowTop;
+    tooltip.setAttribute("data-placement", useTop ? "top" : "bottom");
 
-    const updateHoverEffects = () => {
-      if (isHovered || isDragging) {
-        fill.style.background = isDragging
-          ? 'linear-gradient(to right, #173544, #0d1420)'
-          : 'linear-gradient(to right, #1b5566 0%, #2ea6d6 56%, #35e4ff 100%)';
-        button.style.backgroundPosition = isDragging ? '0 -60px' : '0 -30px';
-      } else {
-        fill.style.background = 'linear-gradient(to left, #173544, #0d1420)';
-        button.style.backgroundPosition = '0 0';
-      }
-    };
+    // Center horizontally on icon, clamp to viewport
+    let left = rect.left + rect.width / 2 - tRect.width / 2;
+    const maxLeft = window.innerWidth - tRect.width - 8;
+    left = Math.max(8, Math.min(maxLeft, left));
 
-    slider.addEventListener('input', (e) => {
-      updateSlider(parseInt(e.target.value));
-    });
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
 
-    // Use the slider container for hover detection to be more precise
-    const sliderContainer = slider.closest('.lol-settings-slider');
-    if (sliderContainer) {
-      sliderContainer.addEventListener('mouseenter', () => {
-        isHovered = true;
-        updateHoverEffects();
-      });
+    // Nudge the arrow towards the anchor if clamped
+    const anchorCenterX = rect.left + rect.width / 2;
+    const arrowX = Math.max(12, Math.min(tRect.width - 12, anchorCenterX - left));
+    tooltip.style.setProperty("--chud-tooltip-arrow-x", `${Math.round(arrowX)}px`);
+  }
 
-      sliderContainer.addEventListener('mouseleave', () => {
-        isHovered = false;
-        updateHoverEffects();
-      });
+  // Round "i" info dot (README §1 TIMING) — same global tooltip bubble as before, new visuals.
+  function createTooltipButton(tooltipText, ariaLabel) {
+    const wrapper = document.createElement("span");
+    wrapper.className = "chud-tooltip-wrapper";
 
-      // Also handle mouseover on child elements to ensure hover state is maintained
-      const handleMouseOver = () => {
-        if (!isHovered) {
-          isHovered = true;
-          updateHoverEffects();
-        }
-      };
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chud-tooltip-icon";
+    btn.textContent = "i";
+    btn.setAttribute("aria-label", ariaLabel || "Info");
 
-      const handleMouseOut = (e) => {
-        // Check if we're actually leaving the container
-        const relatedTarget = e.relatedTarget;
-        if (!relatedTarget || !sliderContainer.contains(relatedTarget)) {
-          isHovered = false;
-          updateHoverEffects();
-        }
-      };
-
-      // Add listeners to all interactive child elements
-      const buttonElement = sliderContainer.querySelector('.lol-uikit-slider-button');
-      const trackElement = sliderContainer.querySelector('.lol-uikit-slider-base-track');
-
-      if (buttonElement) {
-        buttonElement.addEventListener('mouseover', handleMouseOver);
-        buttonElement.addEventListener('mouseout', handleMouseOut);
-      }
-
-      if (trackElement) {
-        trackElement.addEventListener('mouseover', handleMouseOver);
-        trackElement.addEventListener('mouseout', handleMouseOut);
-      }
-    }
-
-    const handleMouseMove = (e) => {
-      if (!isDragging) return;
-
-      const sliderRect = slider.getBoundingClientRect();
-      const x = Math.max(0, Math.min(sliderRect.width, e.clientX - sliderRect.left));
-      const percentage = x / sliderRect.width;
-      const value = Math.round(percentage * (max - min) + min);
-
-      updateSlider(value);
-    };
-
-    const cleanupDragging = () => {
-      if (!isDragging) return;
-
-      isDragging = false;
-      updateHoverEffects();
-
-      button.style.transition = 'left 0.1s ease-out';
-      fill.style.transition = 'width 0.1s ease-out, background 0.2s ease';
-
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', cleanupDragging);
-      document.removeEventListener('mouseleave', cleanupDragging);
-    };
-
-    button.addEventListener('mousedown', (e) => {
-      isDragging = true;
-      updateHoverEffects();
+    // prevent accidental focus/drag interactions with nearby controls
+    btn.addEventListener("click", (e) => {
       e.preventDefault();
-
-      button.style.transition = 'none';
-      fill.style.transition = 'none';
-
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', cleanupDragging);
-      document.addEventListener('mouseleave', cleanupDragging);
+      e.stopPropagation();
     });
 
-    const track = slider.closest('.lol-settings-slider')?.querySelector('.lol-uikit-slider-base-track');
-    if (track) {
-      track.addEventListener('click', (e) => {
-        const sliderRect = slider.getBoundingClientRect();
-        const x = Math.max(0, Math.min(sliderRect.width, e.clientX - sliderRect.left));
-        const percentage = x / sliderRect.width;
-        const value = Math.round(percentage * (max - min) + min);
+    const show = () => showGlobalTooltipFor(btn, tooltipText);
+    const hide = () => hideGlobalTooltip();
 
-        updateSlider(value);
-      });
-    }
+    btn.addEventListener("mouseenter", show);
+    btn.addEventListener("mouseleave", hide);
+    btn.addEventListener("focus", show);
+    btn.addEventListener("blur", hide);
 
-    // Initialize position
-    updateSlider(parseInt(slider.value));
+    // Keep tooltip in correct position while resizing/scrolling
+    const reposition = () => {
+      const tt = document.getElementById("chud-global-tooltip");
+      if (!tt || tt.getAttribute("data-show") !== "true") return;
+      showGlobalTooltipFor(btn, tooltipText);
+    };
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+
+    wrapper.appendChild(btn);
+    return wrapper;
+  }
+
+  // Shared math for painting a diamond-slider's fill/handle/value label from a raw value.
+  function applyChudSliderVisual(min, max, rawValue, fillEl, handleEl, valueEl, format) {
+    const clamped = Math.max(min, Math.min(max, rawValue));
+    const pct = max > min ? ((clamped - min) / (max - min)) * 100 : 0;
+    if (fillEl) fillEl.style.width = `${pct}%`;
+    if (handleEl) handleEl.style.left = `${pct}%`;
+    if (valueEl) valueEl.textContent = format(clamped);
+    return clamped;
+  }
+
+  // Builds one TIMING row: info dot + name + unit + value, and a custom track+fill+diamond-handle
+  // slider (README §1 TIMING / §Interactions — native <input type=range> can't give the diamond
+  // handle, so this is pointerdown/pointermove/pointerup on window, plus click-to-set on the track).
+  // `toStoredValue`/`fromStoredValue` bridge to the legacy #<idBase>-slider value convention that
+  // saveSettings()/updateSettingsForm() already expect (threshold is stored as hundredths).
+  function createDiamondSlider(opts) {
+    const { idBase, name, tooltip, min, max, step, value, format, toStoredValue, fromStoredValue } = opts;
+
+    const row = document.createElement("div");
+    row.className = "chud-slider-row";
+
+    const labelRow = document.createElement("div");
+    labelRow.className = "chud-slider-label-row";
+
+    const left = document.createElement("span");
+    left.className = "chud-slider-label-left";
+    left.appendChild(createTooltipButton(tooltip, `${name} info`));
+    const nameEl = document.createElement("span");
+    nameEl.className = "chud-slider-name";
+    nameEl.textContent = name;
+    const unitEl = document.createElement("span");
+    unitEl.className = "chud-slider-unit";
+    unitEl.textContent = "sec";
+    left.appendChild(nameEl);
+    left.appendChild(unitEl);
+
+    const valueEl = document.createElement("span");
+    valueEl.className = "chud-slider-value";
+    valueEl.id = `${idBase}-value`;
+
+    labelRow.appendChild(left);
+    labelRow.appendChild(valueEl);
+    row.appendChild(labelRow);
+
+    const track = document.createElement("div");
+    track.className = "chud-slider-track";
+    const rail = document.createElement("div");
+    rail.className = "chud-slider-rail";
+    const fill = document.createElement("div");
+    fill.className = "chud-slider-fill";
+    fill.id = `${idBase}-fill`;
+    const handle = document.createElement("div");
+    handle.className = "chud-slider-handle";
+    handle.id = `${idBase}-handle`;
+    const handleInner = document.createElement("div");
+    handleInner.className = "chud-slider-handle-inner";
+    handle.appendChild(handleInner);
+    track.appendChild(rail);
+    track.appendChild(fill);
+    track.appendChild(handle);
+    row.appendChild(track);
+
+    // Value store only (not rendered) — same #threshold-slider/#timeout-slider ids/semantics that
+    // saveSettings()/updateSettingsForm() already read/write.
+    const hiddenInput = document.createElement("input");
+    hiddenInput.type = "range";
+    hiddenInput.id = `${idBase}-slider`;
+    hiddenInput.min = String(toStoredValue(min));
+    hiddenInput.max = String(toStoredValue(max));
+    hiddenInput.style.display = "none";
+    row.appendChild(hiddenInput);
+
+    const snap = (v) => {
+      const snapped = Math.round((v - min) / step) * step + min;
+      return Math.max(min, Math.min(max, snapped));
+    };
+
+    const setValue = (raw) => {
+      const snapped = snap(raw);
+      hiddenInput.value = String(toStoredValue(snapped));
+      applyChudSliderVisual(min, max, snapped, fill, handle, valueEl, format);
+      return snapped;
+    };
+
+    setValue(value);
+
+    const valueFromClientX = (clientX) => {
+      const rect = track.getBoundingClientRect();
+      const pct = rect.width > 0 ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0;
+      return min + pct * (max - min);
+    };
+
+    let dragging = false;
+    const onPointerMove = (e) => {
+      if (!dragging) return;
+      setValue(valueFromClientX(e.clientX));
+    };
+    const onPointerUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+    track.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      setValue(valueFromClientX(e.clientX));
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+      e.preventDefault();
+    });
+
+    return { row, setValue, fromStoredValue };
+  }
+
+  // Bottom-center toast pill (README §Toast) — the app has no shared neon.css toast system in this
+  // in-client plugin, so this is a small self-contained equivalent.
+  function showChudToast(message) {
+    try {
+      const panelEl = document.getElementById(PANEL_ID);
+      if (!panelEl) return;
+      const existing = panelEl.querySelector(".chud-toast");
+      if (existing) existing.remove();
+      const toast = document.createElement("div");
+      toast.className = "chud-toast";
+      const icon = document.createElement("span");
+      icon.className = "chud-toast-icon";
+      icon.innerHTML =
+        '<svg width="15" height="15" viewBox="0 0 24 24" style="display:block;"><path d="M5 12l4.5 4.5L19 7" style="fill:none; stroke:currentColor; stroke-width:2.4px; stroke-linecap:round; stroke-linejoin:round;"></path></svg>';
+      const text = document.createElement("span");
+      text.className = "chud-toast-text";
+      text.textContent = message;
+      toast.appendChild(icon);
+      toast.appendChild(text);
+      panelEl.appendChild(toast);
+      setTimeout(() => {
+        try {
+          toast.remove();
+        } catch (e) {}
+      }, 2400);
+    } catch (e) {}
   }
 
   function updateSettingsForm() {
+    // Diamond sliders — same value ranges as createDiamondSlider() uses when building them.
+    applyChudSliderVisual(
+      0.3,
+      2.0,
+      currentSettings.threshold,
+      document.getElementById("threshold-fill"),
+      document.getElementById("threshold-handle"),
+      document.getElementById("threshold-value"),
+      (v) => `${v.toFixed(2)} s`
+    );
     const thresholdSlider = document.getElementById("threshold-slider");
-    const thresholdValue = document.getElementById("threshold-value");
-    const thresholdButton = thresholdSlider?.closest('.lol-settings-slider')?.querySelector('.lol-uikit-slider-button');
-    const thresholdFill = thresholdSlider?.closest('.lol-settings-slider')?.querySelector('.lol-uikit-slider-fill');
+    if (thresholdSlider) thresholdSlider.value = String(Math.round(currentSettings.threshold * 100));
+
+    applyChudSliderVisual(
+      20,
+      180,
+      currentSettings.monitorAutoResumeTimeout,
+      document.getElementById("timeout-fill"),
+      document.getElementById("timeout-handle"),
+      document.getElementById("timeout-value"),
+      (v) => `${Math.round(v)} s`
+    );
     const timeoutSlider = document.getElementById("timeout-slider");
-    const timeoutValue = document.getElementById("timeout-value");
-    const timeoutButton = timeoutSlider?.closest('.lol-settings-slider')?.querySelector('.lol-uikit-slider-button');
-    const timeoutFill = timeoutSlider?.closest('.lol-settings-slider')?.querySelector('.lol-uikit-slider-fill');
-    const autostartCheckbox = document.getElementById("autostart-checkbox");
+    if (timeoutSlider) timeoutSlider.value = String(Math.round(currentSettings.monitorAutoResumeTimeout));
+
+    // Auto-start toggle
+    const autostartToggle = document.getElementById("autostart-checkbox");
+    if (autostartToggle) {
+      autostartToggle.checked = !!currentSettings.autostart;
+      autostartToggle.classList.toggle("on", autostartToggle.checked);
+      autostartToggle.setAttribute("aria-pressed", String(autostartToggle.checked));
+    }
+
     const pathInput = document.getElementById("game-path-input");
-
-    if (thresholdSlider && thresholdValue && thresholdButton && thresholdFill) {
-      const sliderValue = Math.round(currentSettings.threshold * 100);
-      thresholdSlider.value = sliderValue;
-      thresholdValue.textContent = `${currentSettings.threshold.toFixed(2)} s`;
-      const min = parseInt(thresholdSlider.min || "30", 10);
-      const max = parseInt(thresholdSlider.max || "200", 10);
-      const percentage = ((sliderValue - min) / (max - min)) * 100;
-      const maxPosition = 400 - 30; // 370px max
-      const buttonPosition = (percentage / 100) * maxPosition;
-      thresholdButton.style.left = `${buttonPosition}px`;
-      thresholdFill.style.width = `${buttonPosition}px`;
-    }
-
-    if (timeoutSlider && timeoutValue && timeoutButton && timeoutFill) {
-      timeoutSlider.value = currentSettings.monitorAutoResumeTimeout;
-      timeoutValue.textContent = `${currentSettings.monitorAutoResumeTimeout} s`;
-      const min = parseInt(timeoutSlider.min || "20", 10);
-      const max = parseInt(timeoutSlider.max || "180", 10);
-      const percentage = ((currentSettings.monitorAutoResumeTimeout - min) / (max - min)) * 100;
-      const maxPosition = 400 - 30; // 370px max
-      const buttonPosition = (percentage / 100) * maxPosition;
-      timeoutButton.style.left = `${buttonPosition}px`;
-      timeoutFill.style.width = `${buttonPosition}px`;
-    }
-
-    if (autostartCheckbox) {
-      autostartCheckbox.checked = currentSettings.autostart;
-    }
-
     if (pathInput) {
       pathInput.value = currentSettings.gamePath || "";
       // Update status based on validation result from settings data
@@ -2517,129 +2304,7 @@
     });
   }
 
-  function openAddCustomModsDialog() {
-    createCategorySelectionDialog();
-    log("info", "Add custom mods dialog opened");
-  }
-
-  function createCategorySelectionDialog() {
-    // Remove existing dialog if any
-    const existingDialog = document.getElementById("add-custom-mods-dialog");
-    if (existingDialog) {
-      existingDialog.remove();
-    }
-
-    // Create dialog container
-    const dialog = document.createElement("div");
-    dialog.id = "add-custom-mods-dialog";
-    dialog.style.position = "fixed";
-    dialog.style.top = "0";
-    dialog.style.left = "0";
-    dialog.style.width = "100%";
-    dialog.style.height = "100%";
-    dialog.style.zIndex = "10001";
-    dialog.style.pointerEvents = "none";
-    document.body.appendChild(dialog);
-
-    // Create backdrop
-    const backdrop = document.createElement("div");
-    backdrop.className = "backdrop";
-    backdrop.addEventListener("click", (e) => {
-      if (e.target === backdrop) {
-        closeCategoryDialog();
-      }
-    });
-    dialog.appendChild(backdrop);
-
-    // Create flyout frame
-    let flyoutFrame;
-    try {
-      flyoutFrame = document.createElement("lol-uikit-flyout-frame");
-      flyoutFrame.id = "add-custom-mods-flyout";
-      flyoutFrame.className = "flyout";
-      flyoutFrame.setAttribute("orientation", "center");
-      flyoutFrame.setAttribute("animated", "true");
-      flyoutFrame.setAttribute("show", "true");
-    } catch (e) {
-      log("debug", "Could not create custom element, using div", e);
-      flyoutFrame = document.createElement("div");
-      flyoutFrame.id = "add-custom-mods-flyout";
-      flyoutFrame.className = "flyout";
-    }
-
-    flyoutFrame.style.position = "absolute";
-    flyoutFrame.style.top = "50%";
-    flyoutFrame.style.left = "50%";
-    flyoutFrame.style.transform = "translate(-50%, -50%)";
-    flyoutFrame.style.zIndex = "10002";
-    flyoutFrame.style.pointerEvents = "all";
-
-    // Create flyout content
-    let flyoutContent;
-    try {
-      flyoutContent = document.createElement("lc-flyout-content");
-    } catch (e) {
-      log("debug", "Could not create lc-flyout-content, using div", e);
-      flyoutContent = document.createElement("div");
-      flyoutContent.className = "lc-flyout-content";
-    }
-
-    // Title
-    const title = document.createElement("div");
-    title.className = "settings-title";
-    title.textContent = "Add Custom Mods";
-    flyoutContent.appendChild(title);
-
-    // Category buttons container
-    const categoriesContainer = document.createElement("div");
-    categoriesContainer.style.display = "flex";
-    categoriesContainer.style.flexDirection = "column";
-    categoriesContainer.style.gap = "10px";
-
-    const categories = [
-      { id: "skins", name: "Skins" },
-      { id: "maps", name: "Maps" },
-      { id: "fonts", name: "Fonts" },
-      { id: "announcers", name: "Announcers" },
-      { id: "ui", name: "UI" },
-      { id: "voiceover", name: "Voiceover" },
-      { id: "loading_screen", name: "Loading Screen" },
-      { id: "vfx", name: "VFX" },
-      { id: "sfx", name: "SFX" },
-      { id: "others", name: "Others" },
-    ];
-
-    categories.forEach((category) => {
-      const categoryButton = document.createElement("lol-uikit-flat-button-secondary");
-      categoryButton.textContent = category.name;
-      categoryButton.style.width = "100%";
-      categoryButton.style.padding = "12px";
-      categoryButton.addEventListener("click", () => {
-        handleCategorySelection(category.id);
-      });
-      categoriesContainer.appendChild(categoryButton);
-    });
-
-    flyoutContent.appendChild(categoriesContainer);
-    flyoutFrame.appendChild(flyoutContent);
-    dialog.appendChild(flyoutFrame);
-
-    // Prevent click from closing
-    flyoutFrame.addEventListener("click", (e) => {
-      e.stopPropagation();
-    });
-  }
-
-  function closeCategoryDialog() {
-    const dialog = document.getElementById("add-custom-mods-dialog");
-    if (dialog) {
-      dialog.remove();
-    }
-  }
-
   function handleCategorySelection(category) {
-    closeCategoryDialog();
-
     if (category === "skins") {
       // Open champion selection for skins
       openChampionSelection();
@@ -3462,7 +3127,7 @@
 
       // Smooth close (avoid scale/pop + avoid one-frame re-appearance).
       try {
-        const baseTransform = flyout.style.transform || "translateX(-50%)";
+        const baseTransform = flyout.style.transform || "";
         flyout.style.willChange = "opacity, transform";
         flyout.style.transition =
           "opacity 180ms cubic-bezier(0.22, 1, 0.36, 1), transform 180ms cubic-bezier(0.22, 1, 0.36, 1)";
