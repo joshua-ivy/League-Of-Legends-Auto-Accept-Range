@@ -662,6 +662,59 @@
     } else {
       lobbyButton.classList.remove("connected");
     }
+    updateChudIndicator(connectedPeers.length);
+  }
+
+  // A floating "CHUD" badge shown whenever you're connected with other Chud
+  // users in your lobby — so you know, at a glance, that you'll see each
+  // other's skins in-game. No tokens, no clicking; it just appears.
+  function ensureIndicatorStyles() {
+    if (document.getElementById("chud-party-indicator-css")) return;
+    const s = document.createElement("style");
+    s.id = "chud-party-indicator-css";
+    s.textContent = `
+      #chud-party-indicator {
+        position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+        z-index: 2147483000; display: flex; align-items: center; gap: 8px;
+        padding: 6px 15px; border-radius: 999px;
+        background: rgba(11,11,34,.94); border: 1px solid rgba(53,228,255,.55);
+        box-shadow: 0 0 20px rgba(255,61,154,.35), 0 4px 16px rgba(0,0,0,.55);
+        font-family: "JetBrains Mono", "Courier New", monospace; pointer-events: none;
+        animation: chudIndIn .3s ease-out;
+      }
+      #chud-party-indicator .chud-ind-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: linear-gradient(135deg,#ff3d9a,#35e4ff);
+        box-shadow: 0 0 8px rgba(53,228,255,.85);
+      }
+      #chud-party-indicator .chud-ind-label {
+        font-weight: 700; letter-spacing: .2em; font-size: 12px;
+        background: linear-gradient(90deg,#ff3d9a,#35e4ff);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      #chud-party-indicator .chud-ind-count { font-size: 11px; color: #9a9ac8; }
+      @keyframes chudIndIn { from { opacity:0; transform: translate(-50%,-8px); } to { opacity:1; transform: translate(-50%,0); } }
+    `;
+    document.head.appendChild(s);
+  }
+
+  function updateChudIndicator(count) {
+    const show = partyState.enabled && count > 0;
+    let badge = document.getElementById("chud-party-indicator");
+    if (!show) {
+      if (badge) badge.remove();
+      return;
+    }
+    ensureIndicatorStyles();
+    if (!badge) {
+      badge = document.createElement("div");
+      badge.id = "chud-party-indicator";
+      badge.innerHTML =
+        '<span class="chud-ind-dot"></span><span class="chud-ind-label">CHUD</span><span class="chud-ind-count"></span>';
+      document.body.appendChild(badge);
+    }
+    badge.querySelector(".chud-ind-count").textContent =
+      count === 1 ? "· 1 in party" : "· " + count + " in party";
   }
 
   function createPartyPanel() {
@@ -683,7 +736,7 @@
         <span class="party-status offline">Offline</span>
       </div>
       <div class="party-content">
-        <div class="party-description">Share your skins with friends in the same lobby. Enable party mode and exchange tokens to connect.</div>
+        <div class="party-description">Automatically shares skins with other Chud users in your lobby — no tokens needed. The CHUD badge appears when you're connected.</div>
 
         <div class="party-section" id="party-toggle-section">
           <button class="party-toggle-btn enable" id="party-toggle-btn">

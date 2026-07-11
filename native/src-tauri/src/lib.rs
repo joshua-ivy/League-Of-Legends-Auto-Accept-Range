@@ -839,7 +839,16 @@ pub fn run() {
             // moment the relay's member list changes, not just on request
             // (see `PartyManager::handle_members_update`).
             let party_manager = skins::party::manager::PartyManager::new(&handle, st.skins.clone(), bridge_handle);
-            *st.skins_party.lock_safe() = Some(party_manager);
+            *st.skins_party.lock_safe() = Some(party_manager.clone());
+
+            // Seamless party: auto-enable at startup so there's no button to
+            // press. `enable()` retries until the LCU is reachable, then the
+            // auto-room loop joins the shared lobby room whenever you're in a
+            // lobby — party members converge with zero tokens/clicks. Idles
+            // harmlessly (personal room, no peers) when solo.
+            tauri::async_runtime::spawn(async move {
+                let _ = party_manager.enable().await;
+            });
 
             *st.skins_phase.lock_safe() = Some(phase_handle);
 

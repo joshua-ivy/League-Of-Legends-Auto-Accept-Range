@@ -31,6 +31,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
+use sha2::{Digest, Sha256};
+
 use crate::lcu::{self, Auth};
 use crate::skins::bridge::protocol::now_ms;
 use crate::skins::bridge::BridgeHandle;
@@ -194,11 +196,25 @@ impl PartyManager {
     }
 
     async fn enable_inner(self: &Arc<Self>) -> Result<String, String> {
-        let Some(auth) = lcu::cached_auth() else {
-            return Err("Failed to get summoner ID - is League client running?".to_string());
-        };
-        let Some((summoner_id, summoner_name)) = my_summoner_info(&self.http_client, &auth).await else {
-            return Err("Failed to get summoner ID - is League client running?".to_string());
+        // The LCU can be briefly unresponsive (still loading, busy, or the
+        // lockfile port/password just rotated on a client restart). Retry a
+        // few times, invalidating stale auth between attempts, so a transient
+        // hiccup doesn't fail enable with a scary "is League running?" error.
+        let mut resolved: Option<(Auth, (u64, String))> = None;
+        for attempt in 0..5 {
+            if let Some(auth) = lcu::cached_auth() {
+                if let Some(info) = my_summoner_info(&self.http_client, &auth).await {
+                    resolved = Some((auth, info));
+                    break;
+                }
+            }
+            lcu::invalidate_auth();
+            if attempt < 4 {
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+            }
+        }
+        let Some((auth, (summoner_id, summoner_name))) = resolved else {
+            return Err("Couldn't reach the League client. Make sure it's fully loaded (past the login screen), then try again.".to_string());
         };
 
         let key = token::generate_key();
@@ -894,15 +910,39 @@ fn resolve_relay_url(app: &AppHandle) -> String {
 /// since both come from the same `/lol-summoner/v1/current-summoner` call.
 async fn my_summoner_info(client: &reqwest::Client, auth: &Auth) -> Option<(u64, String)> {
     let summoner = lcu_ext::current_summoner(client, auth).await?;
-    let id = summoner.get("summonerId").and_then(Value::as_i64).filter(|id| *id > 0)? as u64;
-    let name = summoner
-        .get("displayName")
-        .and_then(Value::as_str)
-        .or_else(|| summoner.get("gameName").and_then(Value::as_str))
-        .or_else(|| summoner.get("internalName").and_then(Value::as_str))
-        .unwrap_or("Unknown")
+    // Riot is deprecating `summonerId` (0 on newer accounts); fall back to a
+    // stable non-zero u64 derived from the puuid so peer identity still works.
+    let id = summoner
+        .get("summonerId")
+        .and_then(Value::as_i64)
+        .filter(|id| *id > 0)
+        .map(|id| id as u64)
+        .or_else(|| {
+            summoner
+                .get("puuid")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(puuid_to_u64)
+        })?;
+    // Prefer a NON-EMPTY name (displayName is often "" now — skip it rather
+    // than let it win over gameName).
+    let name = ["gameName", "displayName", "internalName"]
+        .iter()
+        .find_map(|k| summoner.get(*k).and_then(Value::as_str).filter(|s| !s.is_empty()))
+        .unwrap_or("Summoner")
         .to_string();
     Some((id, name))
+}
+
+/// Stable non-zero u64 identity from a puuid (first 8 bytes of its sha256),
+/// for accounts where Riot has zeroed `summonerId`.
+fn puuid_to_u64(puuid: &str) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(puuid.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(bytes) | 1
 }
 
 fn unix_now() -> u64 {
