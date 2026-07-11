@@ -2,7 +2,7 @@
  * @name Chud-RandomSkin
  * @author Chud Team
  * @description Random skin for Pengu Loader
- * @link https://github.com/jivy26/Chud
+ * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
  */
 (function initRandomSkin() {
   const LOG_PREFIX = "[Chud-RandomSkin]";
