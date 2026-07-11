@@ -128,6 +128,9 @@
       z-index: 10000;
       pointer-events: none;
     }
+    /* Prevent padding/borders from pushing children past the card width (the
+       cause of the horizontal scrollbar). */
+    #${PANEL_ID}, #${PANEL_ID} * { box-sizing: border-box; }
 
     /* ===== Neon Glass design tokens (see design_handoff_settings_redesign/README.md) ===== */
     #${PANEL_ID} {
@@ -258,9 +261,15 @@
       position: relative;
       z-index: 2;
       margin: auto;
-      width: min(600px, 100%);
-      max-height: calc(100vh - 88px);
+      width: min(600px, 94vw);
+      /* Cap at a comfortable card height (centered with margin on tall
+         screens) and only scroll vertically inside the card — never the
+         viewport, and never horizontally. */
+      max-height: min(840px, calc(100vh - 56px));
       overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-width: thin;
+      scrollbar-color: #35e4ff rgba(255,255,255,.06);
       background: linear-gradient(180deg, rgba(18,16,44,.82) 0%, rgba(12,11,33,.9) 100%);
       border: 1px solid rgba(255,255,255,.12);
       backdrop-filter: blur(18px);
@@ -269,6 +278,12 @@
       color: #f2f2ff;
       pointer-events: all;
     }
+    /* Neon-themed scrollbar to match the menu (replaces the grey Windows one). */
+    #${FLYOUT_ID}::-webkit-scrollbar { width: 10px; }
+    #${FLYOUT_ID}::-webkit-scrollbar-track { background: rgba(255,255,255,.04); border-radius: 8px; margin: 8px 0; }
+    #${FLYOUT_ID}::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #ff3d9a, #35e4ff); border-radius: 8px; border: 2px solid rgba(11,11,34,.92); }
+    #${FLYOUT_ID}::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, #ff5cc8, #7ceeff); }
+    #${FLYOUT_ID}::-webkit-scrollbar-corner { background: transparent; }
     #${FLYOUT_ID} .chud-rule {
       position: absolute;
       top: 0;
