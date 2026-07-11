@@ -7,12 +7,32 @@ use std::time::Duration;
 
 use tauri::AppHandle;
 
+use crate::skins::slog::{log_info, log_warn};
 use crate::{emit_state, lcu, lcu_ws, AppState, LockExt};
 
 /// Exponential backoff: base * 2^min(errors,6), capped.
 fn backoff(base: f64, errors: u32, cap: f64) -> f64 {
     let factor = 2f64.powi(errors.min(6) as i32);
     (base * factor).min(cap)
+}
+
+/// Consecutive transient failures to ride out at the fast poll cadence before
+/// escalating to exponential backoff. A ready-check accept window is only
+/// ~10-13s, so a single slow/failed LCU request must NOT put the poll loop to
+/// sleep for that whole window — the old code backed off 10s on the FIRST
+/// error, which could sleep straight through a queue pop and miss it. Keep
+/// polling at `check_interval` through a brief client hiccup and only back off
+/// once failures persist (the client is genuinely gone, not just hitching).
+const FAST_RETRY_GRACE: u32 = 4;
+
+/// Sleep duration after a failed poll: fast (`check_interval`) for the first
+/// `FAST_RETRY_GRACE` consecutive failures, then exponential backoff.
+fn retry_sleep_secs(check_interval: f64, base: f64, errors: u32, cap: f64) -> f64 {
+    if errors <= FAST_RETRY_GRACE {
+        check_interval.max(0.2)
+    } else {
+        backoff(base, errors - FAST_RETRY_GRACE, cap)
+    }
 }
 
 /// True while this loop instance is the current one: still toggled on AND not
@@ -57,7 +77,7 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
                 state.client_online.store(false, Ordering::SeqCst);
                 emit_state(&app, &state);
                 errors = errors.saturating_add(1);
-                sleep_interruptible(&state, generation, backoff(retry_delay, errors, max_backoff)).await;
+                sleep_interruptible(&state, generation, retry_sleep_secs(check_interval, retry_delay, errors, max_backoff)).await;
             }
             Some(a) => match lcu::get_phase(&client, &a).await {
                 Some(phase) => {
@@ -80,11 +100,17 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
                     }
 
                     if phase == "ReadyCheck" {
-                        if !state.readycheck_handled.load(Ordering::SeqCst)
-                            && lcu::accept_match(&client, &a).await
-                            && !state.readycheck_handled.swap(true, Ordering::SeqCst)
-                        {
-                            state.stats.lock_safe().record_accept();
+                        if !state.readycheck_handled.load(Ordering::SeqCst) {
+                            log_info!("[AUTO-ACCEPT] Ready check detected (poll) - accepting");
+                            let accepted = lcu::accept_match(&client, &a).await;
+                            if accepted && !state.readycheck_handled.swap(true, Ordering::SeqCst) {
+                                log_info!("[AUTO-ACCEPT] Accepted ready check");
+                                state.stats.lock_safe().record_accept();
+                            } else if !accepted {
+                                // Leave `readycheck_handled` false so the next
+                                // poll (or the WS task) retries within the window.
+                                log_warn!("[AUTO-ACCEPT] Accept request failed - retrying next poll");
+                            }
                         }
                     } else {
                         state.readycheck_handled.store(false, Ordering::SeqCst);
@@ -98,7 +124,10 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
                     state.client_online.store(false, Ordering::SeqCst);
                     emit_state(&app, &state);
                     errors = errors.saturating_add(1);
-                    sleep_interruptible(&state, generation, backoff(retry_delay, errors, max_backoff)).await;
+                    if errors == FAST_RETRY_GRACE + 1 {
+                        log_warn!("[AUTO-ACCEPT] LCU unresponsive for {FAST_RETRY_GRACE} polls - backing off (client likely closed)");
+                    }
+                    sleep_interruptible(&state, generation, retry_sleep_secs(check_interval, retry_delay, errors, max_backoff)).await;
                 }
             },
         }
@@ -109,5 +138,31 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
     if state.auto_accept_gen.load(Ordering::SeqCst) == generation {
         state.client_online.store(false, Ordering::SeqCst);
         emit_state(&app, &state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_single_transient_failure_retries_fast_not_through_the_ready_check_window() {
+        // The bug this guards: the old code backed off `backoff(5,1,30) = 10s`
+        // on the FIRST failure, long enough to sleep through a ~10-13s ready
+        // check. The first `FAST_RETRY_GRACE` failures must stay at the fast
+        // poll cadence instead.
+        let (check, base, cap) = (1.0, 5.0, 30.0);
+        for errors in 1..=FAST_RETRY_GRACE {
+            assert_eq!(retry_sleep_secs(check, base, errors, cap), check, "failure #{errors} must retry fast");
+        }
+        // Only once failures persist past the grace window do we back off — and
+        // then it ramps from the base, not from a huge first jump.
+        assert_eq!(retry_sleep_secs(check, base, FAST_RETRY_GRACE + 1, cap), backoff(base, 1, cap));
+        assert!(retry_sleep_secs(check, base, FAST_RETRY_GRACE + 3, cap) <= cap);
+    }
+
+    #[test]
+    fn fast_retry_respects_the_200ms_floor() {
+        assert_eq!(retry_sleep_secs(0.05, 5.0, 1, 30.0), 0.2);
     }
 }
