@@ -34,6 +34,7 @@ use tokio_tungstenite::Connector;
 
 use crate::skins::lcu_ext::SessionData;
 use crate::skins::phase::PhaseInput;
+use crate::skins::slog::{log_info, log_warn};
 use crate::{emit_state, lcu, AppState, LockExt};
 
 /// WAMP subscribe opcode 5; event frames arrive as opcode 8.
@@ -98,11 +99,15 @@ async fn stream_events(app: &AppHandle, state: &Arc<AppState>, auth: &lcu::Auth,
 
                 *state.phase.lock_safe() = phase.to_string();
                 if phase == "ReadyCheck" {
-                    if !state.readycheck_handled.load(Ordering::SeqCst)
-                        && lcu::accept_match(&client, auth).await
-                        && !state.readycheck_handled.swap(true, Ordering::SeqCst)
-                    {
-                        state.stats.lock_safe().record_accept();
+                    if !state.readycheck_handled.load(Ordering::SeqCst) {
+                        log_info!("[AUTO-ACCEPT] Ready check detected (websocket) - accepting");
+                        let accepted = lcu::accept_match(&client, auth).await;
+                        if accepted && !state.readycheck_handled.swap(true, Ordering::SeqCst) {
+                            log_info!("[AUTO-ACCEPT] Accepted ready check");
+                            state.stats.lock_safe().record_accept();
+                        } else if !accepted {
+                            log_warn!("[AUTO-ACCEPT] Accept request failed (websocket) - poll will retry");
+                        }
                     }
                 } else {
                     state.readycheck_handled.store(false, Ordering::SeqCst);
