@@ -18,6 +18,8 @@ relay-worker/.wrangler/
 # ── Inside native/: build output + local-only files ──
 native/target/
 native/**/target/
+# Alternate release build dir (used to build while the main exe is locked)
+native/target-rel/
 **/*.rs.bk
 native/ui/node_modules/
 native/src-tauri/gen/schemas/

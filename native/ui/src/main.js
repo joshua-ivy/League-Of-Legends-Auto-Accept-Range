@@ -781,6 +781,70 @@ async function onStopAll() {
   state.activeToolCount = 0; toast("All tools stopped", "", "info"); onStateChanged();
 }
 
+// ── In-app updater ────────────────────────────────────────────────────────────
+// A themed "update available" pill in the top bar. Click it (or the pill) to
+// download+install on your own schedule — no manual installer, no forced
+// mid-game downtime. The backend kills stale mod-tools processes first so the
+// install never fails on a locked file, then relaunches when done.
+let pendingUpdate = null;
+let updating = false;
+
+function showUpdatePill(info) {
+  if (!info || !info.version) return;
+  pendingUpdate = info;
+  const pill = document.getElementById("updatePill");
+  if (!pill) return;
+  pill.innerHTML = `${ico("refresh")}<span>Update ${esc(info.version)}</span>`;
+  pill.style.display = "";
+  pill.onclick = () => openUpdateOverlay();
+}
+
+function openUpdateOverlay() {
+  if (!pendingUpdate) return;
+  const ov = document.getElementById("updateOverlay");
+  document.getElementById("updateTitle").textContent = `Update to v${pendingUpdate.version}`;
+  const notes = (pendingUpdate.notes || "").trim();
+  document.getElementById("updateSub").textContent = notes || "A new version of Chud is ready to install.";
+  document.getElementById("updateActions").style.display = "";
+  document.getElementById("updateBar").style.width = "0%";
+  document.getElementById("updatePct").textContent = "";
+  ov.style.display = "";
+  document.getElementById("updateLater").onclick = () => { if (!updating) ov.style.display = "none"; };
+  document.getElementById("updateNow").onclick = () => startUpdate();
+}
+
+async function startUpdate() {
+  if (updating) return;
+  updating = true;
+  document.getElementById("updateActions").style.display = "none";
+  document.getElementById("updateTitle").textContent = "Updating Chud…";
+  document.getElementById("updateSub").textContent = "Chud will restart automatically when it's done.";
+  document.getElementById("updatePct").textContent = "Preparing…";
+  if (!TAURI) { // browser preview: simulate
+    let p = 0; const t = setInterval(() => { p += 8; onUpdateProgress({ downloaded: p, total: 100 }); if (p >= 100) { clearInterval(t); document.getElementById("updatePct").textContent = "Restarting…"; } }, 120);
+    return;
+  }
+  const res = await invoke("updater_install");
+  // On success the backend relaunches the app, so we never really get here;
+  // a returned value means the install errored before restart.
+  if (res === null) {
+    document.getElementById("updateTitle").textContent = "Update failed";
+    document.getElementById("updateSub").textContent = "Couldn't install the update. You can try again, or grab the latest installer from GitHub.";
+    document.getElementById("updateActions").style.display = "";
+    document.getElementById("updateNow").textContent = "Retry";
+    updating = false;
+  }
+}
+
+function onUpdateProgress(p) {
+  if (!p) return;
+  const total = Number(p.total) || 0, done = Number(p.downloaded) || 0;
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : null;
+  document.getElementById("updateBar").style.width = (pct == null ? 8 : pct) + "%";
+  document.getElementById("updatePct").textContent =
+    pct == null ? `${(done / 1048576).toFixed(1)} MB` : (pct >= 100 ? "Restarting…" : `${pct}%`);
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────────────
 async function boot() {
   await loadGlyphs();
@@ -795,6 +859,11 @@ async function boot() {
     ev.listen("notification", (e) => { const n = e?.payload; if (n) toast(n.title || "Chud", n.message || n.msg || "", n.tone || "info"); });
     ev.listen("skins-download-progress", (e) => { if (currentPage === "skins") onSkinsDownloadProgress(e?.payload); });
     ev.listen("skins-download-done", (e) => { onSkinsDownloadDone(e?.payload); });
+    ev.listen("update-available", (e) => showUpdatePill(e?.payload));
+    ev.listen("update-progress", (e) => onUpdateProgress(e?.payload));
   }
+  // Belt-and-suspenders: the startup `update-available` event can fire before
+  // this webview attaches its listener, so ask directly too.
+  invoke("updater_check").then((info) => { if (info) showUpdatePill(info); });
 }
 boot();

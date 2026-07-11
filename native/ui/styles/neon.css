@@ -464,3 +464,49 @@ a:hover { color: var(--cyan); }
 .toast-msg { font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.45; }
 
 body.no-motion *, body.no-motion *::before, body.no-motion *::after { animation: none !important; }
+
+/* ── In-app updater ─────────────────────────────────────────────────────── */
+.update-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; margin-right: 4px;
+  font: 600 12px/1 inherit; letter-spacing: .2px;
+  color: #0a0a1f; border: 0; border-radius: 999px; cursor: pointer;
+  background: var(--neon-grad-h);
+  box-shadow: 0 4px 16px rgba(255,61,154,.38);
+  animation: updatePulse 2.4s ease-in-out infinite;
+}
+.update-pill:hover { filter: brightness(1.08); }
+.update-pill svg { width: 13px; height: 13px; }
+@keyframes updatePulse {
+  0%,100% { box-shadow: 0 4px 16px rgba(255,61,154,.30); }
+  50%     { box-shadow: 0 4px 22px rgba(53,228,255,.55); }
+}
+
+.update-overlay {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
+  background: rgba(5,5,20,.72); backdrop-filter: blur(6px);
+  animation: fadeIn .25s ease both;
+}
+.update-card {
+  width: min(420px, 92vw); padding: 30px 30px 24px; text-align: center;
+  background: var(--bg-stage); border: 1px solid var(--glass-border);
+  border-radius: 18px; box-shadow: 0 24px 80px rgba(0,0,0,.55);
+  position: relative; overflow: hidden;
+}
+.update-card::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: var(--neon-grad-h);
+}
+.update-mark { width: 54px; height: 54px; margin-bottom: 14px; filter: drop-shadow(0 4px 14px rgba(255,61,154,.4)); }
+.update-title { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+.update-sub { margin-top: 8px; font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+.update-track {
+  margin: 20px 0 8px; height: 8px; border-radius: 999px; overflow: hidden;
+  background: rgba(255,255,255,.08);
+}
+.update-bar {
+  height: 100%; width: 0%; border-radius: 999px;
+  background: var(--neon-grad-h); transition: width .25s ease;
+}
+.update-pct { font-size: 12px; color: var(--text-muted); min-height: 16px; }
+.update-actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; }

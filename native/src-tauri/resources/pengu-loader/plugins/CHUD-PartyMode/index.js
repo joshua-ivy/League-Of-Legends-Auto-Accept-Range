@@ -2,7 +2,7 @@
  * @name Chud-PartyMode
  * @author Chud Team
  * @description Party Mode - See your friends' skins in game via P2P
- * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
+ * @link https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range
  */
 (function initPartyMode() {
   const LOG_PREFIX = "[Chud-PartyMode]";

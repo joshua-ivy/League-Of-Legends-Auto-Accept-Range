@@ -2,7 +2,7 @@
  * @name Chud-UI
  * @author Chud Team
  * @description Interface unlocker for Pengu Loader
- * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
+ * @link https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range
  */
 (function enableLockedSkinPreview() {
   const LOG_PREFIX = "[Chud-UI][skin-preview]";
@@ -21,7 +21,7 @@
   // plugin's init re-runs on client navigation.
   let welcomeHandledThisSession = false;
   const WELCOME_DISCORD_URL = "https://discord.gg/a2QTg7btaT";
-  const WELCOME_GITHUB_URL = "https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range";
+  const WELCOME_GITHUB_URL = "https://github.com/ChudTonic/League-Of-Legends-Auto-Accept-Range";
 
   function waitForBridge() {
     return new Promise((resolve, reject) => {
