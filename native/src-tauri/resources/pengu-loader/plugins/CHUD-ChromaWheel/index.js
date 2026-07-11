@@ -2,7 +2,7 @@
  * @name Chud-ChromaWheel
  * @author Chud Team
  * @description Chroma wheel for Pengu Loader
- * @link https://github.com/jivy26/Chud
+ * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
  */
 (function createFakeChromaButton() {
   const LOG_PREFIX = "[LU-ChromaButton]";

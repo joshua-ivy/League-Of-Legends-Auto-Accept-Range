@@ -2,7 +2,7 @@
  * @name Chud-UI
  * @author Chud Team
  * @description Interface unlocker for Pengu Loader
- * @link https://github.com/jivy26/Chud
+ * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
  */
 (function enableLockedSkinPreview() {
   const LOG_PREFIX = "[Chud-UI][skin-preview]";
@@ -16,8 +16,12 @@
   const WELCOME_STYLE_ID = "chud-welcome-css-inline";
   const WELCOME_DIALOG_ID = "chud-welcome-dialog";
   const WELCOME_STORAGE_KEY = "chud_welcome_dismissed";
+  // Set once the user clicks OK, so the popup stays dismissed for the rest of
+  // this client session even if they didn't tick "Do not show again" and the
+  // plugin's init re-runs on client navigation.
+  let welcomeHandledThisSession = false;
   const WELCOME_DISCORD_URL = "https://discord.gg/a2QTg7btaT";
-  const WELCOME_GITHUB_URL = "https://github.com/jivy26/Chud";
+  const WELCOME_GITHUB_URL = "https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range";
 
   function waitForBridge() {
     return new Promise((resolve, reject) => {
@@ -302,7 +306,8 @@
       left: 0;
       width: 100%;
       height: 100%;
-      z-index: 10050;
+      z-index: 2147483000;
+      pointer-events: auto;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -439,7 +444,7 @@
   }
 
   function showWelcomePopup(bridgePort) {
-    if (document.getElementById(WELCOME_DIALOG_ID) || isWelcomeDismissed()) {
+    if (welcomeHandledThisSession || document.getElementById(WELCOME_DIALOG_ID) || isWelcomeDismissed()) {
       return;
     }
 
@@ -508,7 +513,8 @@
     okButton.type = "button";
     okButton.className = "chud-welcome-ok";
     okButton.textContent = "OK";
-    okButton.addEventListener("click", () => {
+    const dismissWelcome = () => {
+      welcomeHandledThisSession = true;
       if (checkbox.checked) {
         try {
           localStorage.setItem(WELCOME_STORAGE_KEY, "true");
@@ -516,8 +522,14 @@
           // ignore storage failures (e.g. private mode)
         }
       }
-      dialog.remove();
-    });
+      // Remove EVERY welcome dialog, not just this closure's `dialog` — if the
+      // plugin init ran more than once, several identical dialogs can stack and
+      // removing one just reveals another, so it looks like OK does nothing.
+      document.querySelectorAll(`#${WELCOME_DIALOG_ID}`).forEach((el) => el.remove());
+    };
+    okButton.addEventListener("click", dismissWelcome);
+    // Clicking the dimmed backdrop also closes it — an escape hatch.
+    backdrop.addEventListener("click", dismissWelcome);
     footer.appendChild(okButton);
 
     panel.appendChild(footer);

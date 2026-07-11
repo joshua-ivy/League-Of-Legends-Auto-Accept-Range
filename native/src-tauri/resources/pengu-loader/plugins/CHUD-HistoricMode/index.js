@@ -2,7 +2,7 @@
  * @name Chud-HistoricMode
  * @author Chud Team
  * @description Historic mode for Pengu Loader
- * @link https://github.com/jivy26/Chud
+ * @link https://github.com/joshua-ivy/League-Of-Legends-Auto-Accept-Range
  */
 (function initHistoricMode() {
   const LOG_PREFIX = "[CHUD-HistoricMode]";
