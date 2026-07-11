@@ -893,7 +893,16 @@ pub fn run() {
             // version. `cfg!(debug_assertions)` skips it in dev builds.
             if !cfg!(debug_assertions) {
                 let update_handle = handle.clone();
-                tauri::async_runtime::spawn(async move { run_startup_update_check(update_handle).await });
+                tauri::async_runtime::spawn(async move {
+                    // Check once shortly after launch, then every 30 min while the
+                    // app stays open — so a release published mid-session surfaces
+                    // the "update available" pill without needing a restart.
+                    run_startup_update_check(update_handle.clone()).await;
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(30 * 60)).await;
+                        run_startup_update_check(update_handle.clone()).await;
+                    }
+                });
             }
 
             // Skins phase engine (S2): always spawned — it just idles (poll
