@@ -236,8 +236,10 @@ export default {
     ctx.waitUntil((async () => {
       const s = await crawlSpurt(env);
       if (s.idle || s.assembled != null) {
-        await warmImages(env, 30);   // thumbnails first (small) — makes browse feel instant
-        await trickleMirror(env, 6); // then the big files
+        // Alternate so neither starves: even minute = mirror files (unlocks
+        // install), odd = warm thumbnails (browse visuals).
+        if (new Date().getUTCMinutes() % 2 === 0) await trickleMirror(env, 6);
+        else await warmImages(env, 30);
       }
     })());
   },
