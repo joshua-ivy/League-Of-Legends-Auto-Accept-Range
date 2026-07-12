@@ -972,8 +972,9 @@ function libraryCardHtml(m) {
   // blow the card height out otherwise.
   const chArr = (m.champions || []).map((c) => c.name);
   const champs = chArr.length > 3 ? `${chArr.slice(0, 3).join(", ")} +${chArr.length - 3} more` : chArr.join(", ");
+  const ready = m.ready ? `<span class="lib-ready" title="Ready to install instantly from Chud">⚡</span>` : "";
   return `<div class="lib-card">
-    <div class="lib-thumb-wrap">${m.thumb ? `<img class="lib-thumb" loading="lazy" src="${esc(m.thumb)}" alt="" onerror="this.classList.add('broken')">` : ""}</div>
+    <div class="lib-thumb-wrap">${m.thumb ? `<img class="lib-thumb" loading="lazy" src="${esc(m.thumb)}" alt="" onerror="this.classList.add('broken')">` : ""}${ready}</div>
     <div class="lib-body">
       <div class="lib-name" title="${esc(m.name)}">${esc(m.name)}</div>
       <div class="lib-meta">${esc(champs)}${m.publisher ? ` · by <b>${esc(m.publisher)}</b>` : ""}</div>
@@ -991,7 +992,7 @@ function renderLibraryInner() {
   const mods = d.mods || [], total = d.total || 0, pageSize = d.pageSize || 48;
   const pages = Math.max(1, Math.ceil(total / pageSize));
   el.innerHTML = `
-    <div class="lib-count dim">${total.toLocaleString()} skin${total === 1 ? "" : "s"}${librarySearch ? ` matching “${esc(librarySearch)}”` : ""} · page ${libraryPage + 1}/${pages}</div>
+    <div class="lib-count dim">${total.toLocaleString()} skin${total === 1 ? "" : "s"}${librarySearch ? ` matching “${esc(librarySearch)}”` : ""}${d.readyCount != null ? ` · ⚡ ${d.readyCount.toLocaleString()} instant` : ""} · page ${libraryPage + 1}/${pages}</div>
     <div class="lib-grid">${mods.map(libraryCardHtml).join("") || `<div class="dim" style="padding:16px">No skins found.</div>`}</div>
     <div class="row" style="justify-content:center;gap:10px;margin-top:14px">
       <button class="btn sm" id="libPrev" ${libraryPage <= 0 ? "disabled" : ""}>← Prev</button>
