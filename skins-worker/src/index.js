@@ -171,6 +171,24 @@ async function trickleMirror(env, n) {
   return { mirrored: count, total: all.length, ready: done.size + count };
 }
 
+// Pre-warm thumbnails into R2 so the card grid loads instantly (images are
+// small; the first browse otherwise pays a slow source fetch per tile).
+async function warmImages(env, n) {
+  if (!env.IMAGES) return { warmed: 0 };
+  const all = await getCatalog(env);
+  let count = 0;
+  for (const m of all) {
+    if (count >= n) break;
+    if (!m.thumbKey) continue;
+    if (await env.IMAGES.head(m.thumbKey)) continue;
+    try {
+      const r = await fetch(`${IMG}/${m.thumbKey}`, { headers: { "User-Agent": UA } });
+      if (r.ok && r.body) { await env.IMAGES.put(m.thumbKey, r.body, { httpMetadata: { contentType: r.headers.get("content-type") || "image/png" } }); count++; }
+    } catch (e) {}
+  }
+  return { warmed: count };
+}
+
 async function resolveDownload(env, modId) {
   const cacheKey = `dl:${modId}`;
   const cached = await env.CATALOG.get(cacheKey);
@@ -217,9 +235,10 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
       const s = await crawlSpurt(env);
-      // Once the day's catalog is assembled, mirror a batch of files into R2
-      // each run (streamed, so no memory cap). ~6/min → full ~3.3k in ~9h.
-      if (s.idle || s.assembled != null) await trickleMirror(env, 6);
+      if (s.idle || s.assembled != null) {
+        await warmImages(env, 30);   // thumbnails first (small) — makes browse feel instant
+        await trickleMirror(env, 6); // then the big files
+      }
     })());
   },
 
@@ -342,6 +361,12 @@ export default {
       if (!env.CRAWL_KEY || url.searchParams.get("key") !== env.CRAWL_KEY) return json({ error: "forbidden" }, 403);
       const n = Math.min(20, Math.max(1, parseInt(url.searchParams.get("n") || "3", 10) || 3));
       return json(await trickleMirror(env, n));
+    }
+
+    if (path === "/warm") {
+      if (!env.CRAWL_KEY || url.searchParams.get("key") !== env.CRAWL_KEY) return json({ error: "forbidden" }, 403);
+      const n = Math.min(120, Math.max(1, parseInt(url.searchParams.get("n") || "50", 10) || 50));
+      return json(await warmImages(env, n));
     }
 
     if (path === "/meta") {
