@@ -178,20 +178,27 @@ impl InjectionManager {
         champion_id: Option<i64>,
         extra_mod_names: &[String],
     ) -> bool {
-        // Base-skin short-circuit (ported verbatim: `skin_{id}` where
-        // `id == 0` or `id == champion_id * 1000` skips injection outright).
-        if let Some(skin_id_str) = skin_name.strip_prefix("skin_") {
-            if let Ok(skin_id) = skin_id_str.split('_').next().unwrap_or(skin_id_str).parse::<i64>() {
-                if skin_id == 0 {
-                    log_info!("[INJECT] Base skin detected (skinId=0) - injection skipped");
-                    return false;
-                }
-                if let Some(champ) = champion_id {
-                    if skin_id == champ * 1000 {
-                        log_info!(
-                            "[INJECT] Base skin detected (skinId={skin_id} for champion {champ}) - injection skipped"
-                        );
+        // Base-skin short-circuit (`skin_{id}` where `id == 0` or
+        // `id == champion_id * 1000`): picking your base skin with nothing to
+        // overlay means there's nothing to inject. BUT a custom/library mod or
+        // party mods staged in `extra_mod_names` must still be injected OVER
+        // the base skin — library mods live at `mods/skins/{champ*1000}`, so
+        // their base-skin target would otherwise be wrongly skipped (a custom
+        // "Separatist Jhin" on base Jhin 202000 silently no-op'd this way).
+        if extra_mod_names.is_empty() {
+            if let Some(skin_id_str) = skin_name.strip_prefix("skin_") {
+                if let Ok(skin_id) = skin_id_str.split('_').next().unwrap_or(skin_id_str).parse::<i64>() {
+                    if skin_id == 0 {
+                        log_info!("[INJECT] Base skin detected (skinId=0), no extra mods - injection skipped");
                         return false;
+                    }
+                    if let Some(champ) = champion_id {
+                        if skin_id == champ * 1000 {
+                            log_info!(
+                                "[INJECT] Base skin detected (skinId={skin_id} for champion {champ}), no extra mods - injection skipped"
+                            );
+                            return false;
+                        }
                     }
                 }
             }
