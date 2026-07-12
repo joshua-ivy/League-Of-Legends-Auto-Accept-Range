@@ -248,11 +248,11 @@ async function serveImage(req, env, ctx, key) {
 // Curated "cosmetic loadout" bundles: the top-installed skins per marquee
 // champion, shipped as one-click packs. Skin ids are catalog mod ids.
 const BUNDLES = [
-  { champ: "Yasuo", champId: 157, skinIds: ["b1355371-eb88-460d-a89a-beb4dae1400a", "fb42adb4-165c-4bbc-aa05-18e876bddd74", "08292f3d-5882-43ed-996c-32c9147f6f63", "83a4379d-fc9a-4133-89d3-8835b787f548", "193a6ae3-af69-451d-85b1-8b45bc3ca856"] },
-  { champ: "Ahri", champId: 103, skinIds: ["b6d8931d-d094-4cfd-b066-3b4926fcdf66", "d55eb66d-b26d-4158-9f59-8c804da04b9b", "18c364c6-6ad4-4ceb-9085-f503a1738de2", "ede331de-6956-4a26-a7ac-0474e6041523", "bafe8ce1-a6c6-4c38-8c49-de2a4d4d6b77"] },
-  { champ: "Zed", champId: 238, skinIds: ["5e7e9cb3-1779-45ea-926b-8bed90e811e6", "ebb87563-4f92-46eb-bcfa-2ae1eac29716", "8d141157-5984-4089-a52f-887646ee8e2e", "4503854d-d56e-42bb-bd39-ccd492261de7", "f354ceff-7a13-4d4f-b76a-314dd9457223"] },
-  { champ: "Jinx", champId: 222, skinIds: ["8d6d6c08-340b-45e3-8cd5-e45609b85365", "72f1df0b-7bac-400e-b320-f9c3f4b04199", "33d36a7f-b0b9-4a7a-aa02-20de40962ddd", "8dd4787c-f17e-4c2b-8010-995dbf5d79d4", "60a8b44d-6a21-4390-bdf2-080519636078"] },
-  { champ: "Katarina", champId: 55, skinIds: ["589ce9c0-7d1c-43b7-a381-e3c7fa069368", "9f957e1d-a96c-4251-b736-a23d859134da", "2f6c6e8d-423b-4dc1-9e1a-42253be8ecf2", "ebf2d318-6c1f-44fd-828b-f94912697df5", "9841715c-cd94-41f2-bc57-55d5bbfb1972"] },
+  { champ: "Yasuo", champId: 157, skinIds: ["b1355371-eb88-460d-a89a-beb4dae1400a", "fb42adb4-165c-4bbc-aa05-18e876bddd74", "08292f3d-5882-43ed-996c-32c9147f6f63", "193a6ae3-af69-451d-85b1-8b45bc3ca856", "0b3781e2-e51a-4eac-8300-e427e4f16345"] },
+  { champ: "Ahri", champId: 103, skinIds: ["b6d8931d-d094-4cfd-b066-3b4926fcdf66", "791956da-f56d-490d-95f0-c2dd79dbd925", "c644062f-9cfc-4f37-ab8d-0748924cad28", "3290df62-2d96-4af0-bb54-2bcc61a07364", "379bbafe-00eb-4c48-9689-f6c3e3e8eb59"] },
+  { champ: "Zed", champId: 238, skinIds: ["5e7e9cb3-1779-45ea-926b-8bed90e811e6", "4503854d-d56e-42bb-bd39-ccd492261de7", "f354ceff-7a13-4d4f-b76a-314dd9457223", "d8775b81-0994-4882-b1fc-517bc29c7f86", "2071a302-5986-40d6-a6b8-e385121d1607"] },
+  { champ: "Jinx", champId: 222, skinIds: ["8d6d6c08-340b-45e3-8cd5-e45609b85365", "72f1df0b-7bac-400e-b320-f9c3f4b04199", "76af7b33-a5fa-4700-91d0-f86c60ac32b1"] },
+  { champ: "Katarina", champId: 55, skinIds: ["589ce9c0-7d1c-43b7-a381-e3c7fa069368", "ebf2d318-6c1f-44fd-828b-f94912697df5", "6591a98e-cf56-426f-82b0-fa10afb2114f", "801fb568-4c41-4fa9-9f0a-847e13b9c9dc", "32ab1af1-5c4f-4be0-9850-8726a7aa8abf"] },
 ];
 
 export default {
