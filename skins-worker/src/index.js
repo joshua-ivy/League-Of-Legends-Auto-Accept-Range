@@ -247,51 +247,38 @@ export default {
     }
 
     if (path.startsWith("/download/")) {
+      // Always hand the client OUR file URL — they download from us (R2), never
+      // from upstream-source. /file serves from R2, or fetches-through+mirrors from
+      // upstream-source on the first-ever request for that mod (upstream-source is only our
+      // upstream/backup source, hit at most once per skin, ever).
       const modId = decodeURIComponent(path.slice("/download/".length));
       if (!modId) return json({ error: "no mod id" }, 400);
-      const asset = await resolveDownload(env, modId);
-      if (!asset) return json({ error: "could not resolve download" }, 404);
-
-      // Resilience mirror: if an R2 files bucket is bound, serve downloads from
-      // OUR copy so we survive upstream-source blocking us AND never spike their
-      // bandwidth. Mirror-on-first-download in the background; the first user
-      // still gets the upstream-source URL immediately, everyone after gets our R2.
-      if (env.FILES) {
-        const fkey = `f/${modId}.fantome`;
-        const head = await env.FILES.head(fkey);
-        if (head) {
-          if (url.searchParams.get("redirect") === "1") return cors(Response.redirect(`${origin}/file/${modId}`, 302));
-          return json({ url: `${origin}/file/${modId}`, mirrored: true });
-        }
-        ctx.waitUntil((async () => {
-          try {
-            const fr = await fetch(asset, { headers: { "User-Agent": UA } });
-            if (fr.ok) {
-              const buf = await fr.arrayBuffer(); // buffer, not stream — the streamed body was being dropped post-response
-              await env.FILES.put(fkey, buf, { httpMetadata: { contentType: "application/zip" } });
-            }
-          } catch (e) {}
-        })());
-        // first hit → upstream-source; next hits → our R2 (mirror completes async)
-      }
-
-      if (url.searchParams.get("redirect") === "1") return cors(Response.redirect(asset, 302));
-      return json({ url: asset, mirrored: false });
+      let mirrored = false;
+      if (env.FILES) { const head = await env.FILES.head(`f/${modId}.fantome`); mirrored = !!head; }
+      const our = `${origin}/file/${modId}`;
+      if (url.searchParams.get("redirect") === "1") return cors(Response.redirect(our, 302));
+      return json({ url: our, mirrored });
     }
 
     if (path.startsWith("/file/")) {
-      // Stream a mirrored .fantome from our R2.
-      if (!env.FILES) return cors(new Response("no mirror", { status: 404 }));
       const modId = decodeURIComponent(path.slice("/file/".length)).replace(/\.fantome$/, "");
-      const obj = await env.FILES.get(`f/${modId}.fantome`);
-      if (!obj) return cors(new Response("not mirrored", { status: 404 }));
-      return cors(new Response(obj.body, {
-        headers: {
-          "Content-Type": "application/zip",
-          "Content-Disposition": `attachment; filename="${modId}.fantome"`,
-          "Cache-Control": "public, max-age=2592000",
-        },
-      }));
+      const fkey = `f/${modId}.fantome`;
+      const attach = { "Content-Type": "application/zip", "Content-Disposition": `attachment; filename="${modId}.fantome"`, "Cache-Control": "public, max-age=2592000" };
+      // Serve from our R2 if we have it.
+      if (env.FILES) {
+        const obj = await env.FILES.get(fkey);
+        if (obj) return cors(new Response(obj.body, { headers: attach }));
+      }
+      // Not mirrored yet — fetch from upstream-source (our upstream), serve it to the
+      // client AND persist to R2 so every future download comes from us.
+      const asset = await resolveDownload(env, modId);
+      if (!asset) return cors(new Response("not found", { status: 404 }));
+      let fr;
+      try { fr = await fetch(asset, { headers: { "User-Agent": UA } }); } catch (e) { return cors(new Response("source unavailable", { status: 502 })); }
+      if (!fr.ok) return cors(new Response("source unavailable", { status: 502 }));
+      const buf = await fr.arrayBuffer();
+      if (env.FILES) ctx.waitUntil(env.FILES.put(fkey, buf.slice(0), { httpMetadata: { contentType: "application/zip" } }));
+      return cors(new Response(buf, { headers: attach }));
     }
 
     if (path === "/meta") {
