@@ -45,6 +45,12 @@ Pick any skin (or chroma) for any champion, right inside the League client. Chud
 
 ![Chud's in-client Settings menu inside the League client, showing the CHUD in-party badge](docs/screenshot-in-client.png)
 
+### 📚 Skin Library
+
+Browse and **one-click install** thousands of community skins, maps, announcers, fonts, and more — right inside Chud. Search by champion or category, favorite the ones you like, and everything you install shows up automatically on the in-client **Custom Mods** button in champ select.
+
+![Chud's Skin Library — browse, search, and install community mods by champion and category](docs/screenshot-library.png)
+
 ### 🛡️ Queue & match helpers
 
 | Tool | What it does |
