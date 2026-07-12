@@ -232,7 +232,9 @@ pub struct Library {
 impl Default for Library {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // Library is stable enough to ship on by default; the beta toggle in
+            // Settings stays so it can be turned off, but it starts enabled.
+            enabled: true,
             endpoint: "https://chud-skins.jivy26.workers.dev".into(),
             installed: std::collections::HashMap::new(),
             favs: Vec::new(),

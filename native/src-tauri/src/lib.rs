@@ -310,9 +310,21 @@ fn get_config(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
 #[tauri::command]
 fn save_config(cfg: serde_json::Value, app: AppHandle, state: tauri::State<Arc<AppState>>) {
     match serde_json::from_value::<Config>(cfg) {
-        Ok(parsed) => {
+        Ok(mut parsed) => {
             {
                 let mut c = state.config.lock_safe();
+                // The general Settings page sends its WHOLE `cfg` snapshot, but
+                // that snapshot goes stale the moment the user flips a control
+                // saved by a DEDICATED command — the Library beta toggle
+                // (`set_library_enabled`), appear-offline (`set_appear_offline`),
+                // client declutter (`skins_set_customization`), or the Skins
+                // page (`skins_save_settings`). A blind `*c = parsed` would
+                // silently revert those. Preserve the dedicated-command sections
+                // from the live config so a general save never clobbers them.
+                parsed.library = c.library.clone();
+                parsed.client = c.client.clone();
+                parsed.presence = c.presence.clone();
+                parsed.skins = c.skins.clone();
                 *c = parsed;
                 let _ = c.save();
             }
