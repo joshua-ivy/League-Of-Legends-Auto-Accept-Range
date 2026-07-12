@@ -148,11 +148,11 @@ async function mirrorFile(env, modId) {
   if (!asset) return null;
   let fr;
   try { fr = await fetch(asset, { headers: { "User-Agent": UA } }); } catch (e) { return null; }
-  if (!fr.ok) return null;
-  const buf = await fr.arrayBuffer();
-  await env.FILES.put(`f/${modId}.fantome`, buf, { httpMetadata: { contentType: "application/zip" } });
+  if (!fr.ok || !fr.body) return null;
+  // STREAM into R2 — never buffer (files reach 150MB; the Worker has 128MB mem).
+  await env.FILES.put(`f/${modId}.fantome`, fr.body, { httpMetadata: { contentType: "application/zip" } });
   await addMirrored(env, modId);
-  return buf.byteLength;
+  return parseInt(fr.headers.get("content-length") || "0", 10) || 0;
 }
 
 // Gentle trickle: mirror up to N not-yet-mirrored files. Runs from the cron once
@@ -217,9 +217,9 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
       const s = await crawlSpurt(env);
-      // Once the day's catalog is assembled, spend the cron budget trickling a
-      // couple of files into R2 so it fills in gradually.
-      if (s.idle || s.assembled != null) await trickleMirror(env, 2);
+      // Once the day's catalog is assembled, mirror a batch of files into R2
+      // each run (streamed, so no memory cap). ~6/min → full ~3.3k in ~9h.
+      if (s.idle || s.assembled != null) await trickleMirror(env, 6);
     })());
   },
 
@@ -321,18 +321,21 @@ export default {
         const obj = await env.FILES.get(fkey);
         if (obj) return cors(new Response(obj.body, { headers: attach }));
       }
-      // Not in R2 yet — fetch, serve, and persist (+ mark ready).
+      // Not in R2 yet — fetch, serve, and persist (+ mark ready). Tee the
+      // stream so we serve the client AND write to R2 without buffering.
       const asset = await resolveDownload(env, modId);
       if (!asset) return cors(new Response("not found", { status: 404 }));
       let fr;
       try { fr = await fetch(asset, { headers: { "User-Agent": UA } }); } catch (e) { return cors(new Response("source unavailable", { status: 502 })); }
-      if (!fr.ok) return cors(new Response("source unavailable", { status: 502 }));
-      const buf = await fr.arrayBuffer();
-      if (env.FILES) ctx.waitUntil((async () => {
-        await env.FILES.put(fkey, buf.slice(0), { httpMetadata: { contentType: "application/zip" } });
-        await addMirrored(env, modId);
-      })());
-      return cors(new Response(buf, { headers: attach }));
+      if (!fr.ok || !fr.body) return cors(new Response("source unavailable", { status: 502 }));
+      if (env.FILES) {
+        const [toClient, toR2] = fr.body.tee();
+        ctx.waitUntil((async () => {
+          try { await env.FILES.put(fkey, toR2, { httpMetadata: { contentType: "application/zip" } }); await addMirrored(env, modId); } catch (e) {}
+        })());
+        return cors(new Response(toClient, { headers: attach }));
+      }
+      return cors(new Response(fr.body, { headers: attach }));
     }
 
     if (path === "/trickle") {

@@ -4,7 +4,7 @@ compatibility_date = "2025-01-01"
 
 # Scheduled refresh.
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["* * * * *"]
 
 # KV.
 [[kv_namespaces]]
