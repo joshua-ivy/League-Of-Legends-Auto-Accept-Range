@@ -1,0 +1,23 @@
+name = "chud-skins"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Crawl upstream-source in gentle spurts: every 15 min the cron grabs a few pages,
+# then idles once the day's catalog is assembled (see src/index.js).
+[triggers]
+crons = ["*/15 * * * *"]
+
+# Cached catalog + resolved download URLs + crawl cursor.
+[[kv_namespaces]]
+binding = "CATALOG"
+id = "3e828b8e9e924b4ca4be4422aba45862"
+
+# Optional: self-hosted image mirror. Bind an R2 bucket named the same and the
+# worker persists mirrored thumbnails there; without it, images still self-host
+# via the Cloudflare edge cache (mirrored-on-first-view either way).
+# [[r2_buckets]]
+# binding = "IMAGES"
+# bucket_name = "chud-skins-images"
+
+# Secret for the manual /crawl endpoint — set with:
+#   npx wrangler secret put CRAWL_KEY
