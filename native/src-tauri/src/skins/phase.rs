@@ -291,6 +291,10 @@ async fn process_phase_observation(
         *null_streak += 1;
         if *null_streak == DISCONNECT_DEBOUNCE_POLLS && last_phase.is_some() {
             log_warn!("[phase] LCU unreachable for {DISCONNECT_DEBOUNCE_POLLS} polls - resetting skins state");
+            // The client may have restarted with a fresh lockfile port — drop
+            // the SHARED auth cache so the next poll re-reads the lockfile and
+            // reconnects, rather than looping forever on the stale cached auth.
+            lcu::invalidate_auth();
             {
                 let mut shared = skins.shared.lock_safe();
                 shared.reset_on_lcu_disconnect();
