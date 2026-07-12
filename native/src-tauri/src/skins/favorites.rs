@@ -14,13 +14,27 @@ use serde_json::Value;
 use crate::skins::paths;
 use crate::skins::slog::log_info;
 
+/// Favorites live next to `config.json` (`%APPDATA%\LeagueOfLegendsTools`) — a
+/// stable per-user dir that SURVIVES updates. They used to live in
+/// `data_root()` (`%LOCALAPPDATA%\Chud`), which is also the NSIS install dir and
+/// gets wiped on every update — that was silently losing all favorites.
 fn favorites_path() -> std::path::PathBuf {
+    crate::config::config_path()
+        .parent()
+        .map(|d| d.join("favorites.json"))
+        .unwrap_or_else(|| paths::data_root().join("favorites.json"))
+}
+
+/// Old location (install dir) — read as a fallback so a user who saved
+/// favorites before this fix keeps them.
+fn legacy_favorites_path() -> std::path::PathBuf {
     paths::data_root().join("favorites.json")
 }
 
 /// Load the `champ_id -> skin_id` favorites map (empty if absent/invalid).
 pub fn load() -> HashMap<i64, i64> {
-    let Ok(text) = std::fs::read_to_string(favorites_path()) else { return HashMap::new() };
+    let text = std::fs::read_to_string(favorites_path()).or_else(|_| std::fs::read_to_string(legacy_favorites_path()));
+    let Ok(text) = text else { return HashMap::new() };
     let Ok(obj) = serde_json::from_str::<HashMap<String, i64>>(&text) else { return HashMap::new() };
     obj.into_iter().filter_map(|(k, v)| k.parse::<i64>().ok().map(|c| (c, v))).collect()
 }
