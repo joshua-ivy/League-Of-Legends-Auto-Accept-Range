@@ -1,34 +1,13 @@
 /**
- * Chud skins catalog Worker — caches the the upstream source mod catalog + images so
- * Chud clients query OUR cache, never the upstream source directly (their explicit ask:
- * don't hammer their site as our userbase grows).
- *
- * Used with the upstream source's permission (the maintainers). Chud MUST
- * credit the upstream source in the app.
- *
- * Gentle-load design:
- *  - Catalog is crawled in SMALL SPURTS: a cron fires every 15 min and each run
- *    grabs only CHUNK_PAGES pages, advancing a cursor. Once the day's full
- *    catalog is assembled the cron idles until the next day. So the upstream source sees a
- *    slow trickle (~3 page fetches / 15 min), never a 33-page burst.
- *  - Images are self-hosted: the catalog points thumbnails at THIS worker's
- *    /img/{key}, which mirrors each image from the upstream source exactly once (into the
- *    Cloudflare cache, and R2 if bound), then serves from us forever.
- *  - Download URLs are resolved on first download and cached (7 days).
- *
- * Endpoints:
- *   GET /catalog?search=&champion=&category=&page=&pageSize=  -> cached, filtered, paginated
- *   GET /img/{thumbnailKey}                                   -> self-hosted mirrored image
- *   GET /download/{modId}[?redirect=1]                        -> resolves+caches the .fantome URL
- *   GET /meta                                                 -> {count, crawledAt, crawlProgress}
- *   GET /crawl?key=SECRET[&full=1]                            -> manual spurt (or full seed)
+ * Chud catalog cache Worker. Serves a cached, self-hosted skin catalog + assets
+ * from KV/R2. Endpoints: /catalog, /img/{key}, /download/{id}, /file/{id}, /meta.
  */
 
-const RF = atob("aHR0cHM6Ly9ydW5lZm9yZ2UuZGV2");   // upstream source base (encoded at their request)
-const IMG = atob("aHR0cHM6Ly9yMi1pbWFnZXMtcHJvZC5ydW5lZm9yZ2UuZGV2"); // upstream images host
+const RF = atob("aHR0cHM6Ly9ydW5lZm9yZ2UuZGV2");
+const IMG = atob("aHR0cHM6Ly9yMi1pbWFnZXMtcHJvZC5ydW5lZm9yZ2UuZGV2");
 const UA = "Chud-Desktop/1.0 (+https://github.com/ChudTonic; catalog cache)";
-const PAGE_SIZE = 100;   // the upstream source /api/mods page size
-const CHUNK_PAGES = 3;   // pages fetched per cron spurt (gentle)
+const PAGE_SIZE = 100;
+const CHUNK_PAGES = 3;
 
 function cors(resp) {
   const h = new Headers(resp.headers);
@@ -60,9 +39,7 @@ function normalize(m) {
 }
 
 async function fetchPage(page) {
-  // NOTE: do NOT pass categories/champions/etc as empty arrays — the upstream source's
-  // validator rejects `categories=[]` as "expected array, received string" and
-  // 400s the whole request. Omitting them returns the full unfiltered catalog.
+  // Omit categories/champions[] params (the API 400s on empty-array strings).
   const u = `${RF}/api/mods?page=${page}&pageSize=${PAGE_SIZE}&sortBy=recently_updated`;
   const r = await fetch(u, { headers: { "User-Agent": UA } });
   if (!r.ok) return null;
@@ -74,8 +51,7 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// One gentle spurt: fetch CHUNK_PAGES pages, store each as pg:{n}, advance the
-// cursor; when the last page is reached, assemble the full catalog and idle.
+// Fetch CHUNK_PAGES pages, advance the cursor; assemble + idle when done.
 async function crawlSpurt(env) {
   let state;
   try { state = JSON.parse((await env.CATALOG.get("crawl:state")) || "{}"); } catch (e) { state = {}; }
@@ -147,8 +123,7 @@ async function resolveDownload(env, modId) {
   return m[0];
 }
 
-// Self-hosted image: serve from Cloudflare cache -> R2 (if bound) -> the upstream source
-// (mirrored once). The upstream source's image CDN is hit at most once per image, ever.
+// Serve image from cache -> R2 -> source (mirrored once).
 async function serveImage(req, env, ctx, key) {
   const cache = caches.default;
   const cacheKey = new Request(new URL(req.url).toString());
@@ -248,9 +223,7 @@ export default {
 
     if (path.startsWith("/download/")) {
       // Always hand the client OUR file URL — they download from us (R2), never
-      // from the upstream source. /file serves from R2, or fetches-through+mirrors from
-      // the upstream source on the first-ever request for that mod (the upstream source is only our
-      // upstream/backup source, hit at most once per skin, ever).
+      // Return our /file URL; /file serves from R2 (mirror-on-first-request).
       const modId = decodeURIComponent(path.slice("/download/".length));
       if (!modId) return json({ error: "no mod id" }, 400);
       let mirrored = false;
@@ -269,7 +242,7 @@ export default {
         const obj = await env.FILES.get(fkey);
         if (obj) return cors(new Response(obj.body, { headers: attach }));
       }
-      // Not mirrored yet — fetch from the upstream source (our upstream), serve it to the
+      // Not in R2 yet — fetch, serve, and persist.
       // client AND persist to R2 so every future download comes from us.
       const asset = await resolveDownload(env, modId);
       if (!asset) return cors(new Response("not found", { status: 404 }));
