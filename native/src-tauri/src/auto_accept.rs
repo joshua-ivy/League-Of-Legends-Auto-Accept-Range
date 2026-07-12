@@ -122,7 +122,13 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
                     sleep_interruptible(&state, generation, check_interval.max(0.2)).await;
                 }
                 None => {
-                    // Request failed — client likely closed; drop cached auth.
+                    // Request failed — client likely closed OR restarted with a
+                    // fresh lockfile port. Invalidate the SHARED auth cache (not
+                    // just our local copy): the next poll re-reads the lockfile
+                    // and reconnects to the restarted client. Nulling only `auth`
+                    // would just re-fetch the SAME stale cached auth from
+                    // `cached_auth()` and stay "offline" forever after a restart.
+                    lcu::invalidate_auth();
                     auth = None;
                     state.client_online.store(false, Ordering::SeqCst);
                     emit_state(&app, &state);
