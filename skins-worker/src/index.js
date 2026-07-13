@@ -205,8 +205,23 @@ async function mirrorFile(env, modId) {
   return parseInt(fr.headers.get("content-length") || "0", 10) || 0;
 }
 
-// Gentle trickle: mirror up to N not-yet-mirrored files. Runs from the cron once
-// the day's catalog crawl is done, so R2 fills in over time.
+// Run `fn` over `items` with at most `concurrency` in flight. Cloudflare
+// caps simultaneous connections, so this keeps the mirror fast without
+// tripping subrequest/connection limits.
+async function pool(items, concurrency, fn) {
+  let i = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (i < items.length) {
+      const idx = i++;
+      await fn(items[idx]);
+    }
+  });
+  await Promise.all(workers);
+}
+
+// Mirror up to N not-yet-mirrored files into R2, in parallel. Runs every cron
+// tick; since it only mirrors what's missing, it bursts through the backlog
+// then self-idles once the whole catalog is in R2.
 async function trickleMirror(env, n) {
   if (!env.FILES) return { mirrored: 0 };
   const all = await getCatalog(env);
@@ -215,14 +230,13 @@ async function trickleMirror(env, n) {
   // installable first, then fill in the rest of the catalog.
   const bundleIds = new Set(BUNDLES.flatMap((b) => b.skinIds));
   const order = [...all].sort((a, b) => (bundleIds.has(b.id) ? 1 : 0) - (bundleIds.has(a.id) ? 1 : 0));
+  const todo = order.filter((m) => !done.has(m.id)).slice(0, n);
   let count = 0;
-  for (const m of order) {
-    if (count >= n) break;
-    if (done.has(m.id)) continue;
-    if (env.FILES && (await env.FILES.head(`f/${m.id}.fantome`))) { await addMirrored(env, m.id); continue; }
+  await pool(todo, 15, async (m) => {
     const bytes = await mirrorFile(env, m.id);
     if (bytes != null) count++;
-  }
+  });
+  if (count) console.log(`trickleMirror: mirrored ${count} file(s)`);
   return { mirrored: count, total: all.length, ready: done.size + count };
 }
 
@@ -231,16 +245,18 @@ async function trickleMirror(env, n) {
 async function warmImages(env, n) {
   if (!env.IMAGES) return { warmed: 0 };
   const all = await getCatalog(env);
+  // Candidate thumbs (skip ones we already have) up to N, then warm in parallel.
+  const withThumbs = all.filter((m) => m.thumbKey);
+  const heads = await Promise.all(withThumbs.slice(0, n * 3).map(async (m) => ({ m, have: !!(await env.IMAGES.head(m.thumbKey)) })));
+  const todo = heads.filter((h) => !h.have).slice(0, n).map((h) => h.m);
   let count = 0;
-  for (const m of all) {
-    if (count >= n) break;
-    if (!m.thumbKey) continue;
-    if (await env.IMAGES.head(m.thumbKey)) continue;
+  await pool(todo, 15, async (m) => {
     try {
       const r = await fetch(`${IMG}/${m.thumbKey}`, { headers: { "User-Agent": UA } });
       if (r.ok && r.body) { await env.IMAGES.put(m.thumbKey, r.body, { httpMetadata: { contentType: r.headers.get("content-type") || "image/png" } }); count++; }
     } catch (e) {}
-  }
+  });
+  if (count) console.log(`warmImages: warmed ${count} thumb(s)`);
   return { warmed: count };
 }
 
@@ -301,10 +317,11 @@ export default {
     ctx.waitUntil((async () => {
       const s = await crawlSpurt(env);
       if (s.idle || s.assembled != null) {
-        // Alternate so neither starves: even minute = mirror files (unlocks
-        // install), odd = warm thumbnails (browse visuals).
-        if (new Date().getUTCMinutes() % 2 === 0) await trickleMirror(env, 6);
-        else await warmImages(env, 30);
+        // upstream source confirmed our load is negligible, so mirror aggressively:
+        // BOTH files and thumbnails every tick, in parallel. This is a burst
+        // that self-idles once the whole catalog is in R2 (it only fetches
+        // what's missing), so the high rate costs nothing once caught up.
+        await Promise.all([trickleMirror(env, 60), warmImages(env, 200)]);
       }
     })());
   },
@@ -469,13 +486,13 @@ export default {
 
     if (path === "/trickle") {
       if (!env.CRAWL_KEY || url.searchParams.get("key") !== env.CRAWL_KEY) return json({ error: "forbidden" }, 403);
-      const n = Math.min(20, Math.max(1, parseInt(url.searchParams.get("n") || "3", 10) || 3));
+      const n = Math.min(300, Math.max(1, parseInt(url.searchParams.get("n") || "60", 10) || 60));
       return json(await trickleMirror(env, n));
     }
 
     if (path === "/warm") {
       if (!env.CRAWL_KEY || url.searchParams.get("key") !== env.CRAWL_KEY) return json({ error: "forbidden" }, 403);
-      const n = Math.min(120, Math.max(1, parseInt(url.searchParams.get("n") || "50", 10) || 50));
+      const n = Math.min(500, Math.max(1, parseInt(url.searchParams.get("n") || "200", 10) || 200));
       return json(await warmImages(env, n));
     }
 
