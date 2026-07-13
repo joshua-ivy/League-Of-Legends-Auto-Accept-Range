@@ -1430,6 +1430,16 @@ pub fn run() {
             // `GameMonitor`'s own 25s default; clamped 1..=180s either way).
             injection_manager
                 .set_auto_resume_timeout(st.config.lock_safe().skins.monitor_auto_resume_timeout_secs);
+            // Startup sweep: auto-fix custom mods imported while Chud was
+            // closed (scope champion skins, retarget announcer packs). Cheap
+            // when nothing changed; ChampSelect entry re-sweeps for files
+            // dropped while running.
+            {
+                let sweep_app = handle.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    skins::mod_scope::sweep_imported_mods(Some(&sweep_app));
+                });
+            }
             let bridge_handle = skins::bridge::spawn(
                 handle.clone(),
                 st.skins.clone(),
