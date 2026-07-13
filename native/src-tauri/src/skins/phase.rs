@@ -447,6 +447,17 @@ async fn champ_select_entry(
         tauri::async_runtime::spawn_blocking(move || injection.reset_stuck_injection());
     }
 
+    // Auto-fix any custom mods imported (hand-dropped) since the last sweep —
+    // scoping/retargeting them NOW, minutes before the loadout injection needs
+    // them, keeps overlay builds fast and off the live champ-select path.
+    // No-op (one metadata stat per mod) when nothing changed.
+    {
+        let sweep_app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::skins::mod_scope::sweep_imported_mods(Some(&sweep_app));
+        });
+    }
+
     let mode = match lcu::cached_auth() {
         Some(auth) => Some(lcu_ext::detect_game_mode(client, &auth).await),
         None => None,

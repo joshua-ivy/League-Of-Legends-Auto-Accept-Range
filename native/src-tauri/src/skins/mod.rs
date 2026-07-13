@@ -13,6 +13,7 @@ pub mod favorites;
 pub mod features;
 pub mod injection;
 pub mod lcu_ext;
+pub mod mod_scope;
 pub mod party;
 pub mod paths;
 pub mod pengu;
