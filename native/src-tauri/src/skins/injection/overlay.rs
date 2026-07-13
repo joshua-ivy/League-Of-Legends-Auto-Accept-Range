@@ -268,18 +268,18 @@ pub fn mk_run_overlay(
     let cfg = overlay_dir.join("cslol-config.json");
     log_info!("[INJECT] Running overlay");
 
-    let run_child = match Command::new(&tools.modtools)
+    let mut run_child = match Command::new(&tools.modtools)
         .arg("runoverlay")
         .arg(overlay_dir)
         .arg(&cfg)
         .arg(format!("--game:{gpath}"))
         .arg("--opts:configless")
         .creation_flags(CREATE_NO_WINDOW)
-        // Don't capture stdout/stderr — DEVNULL avoids the same pipe-buffer
-        // deadlock risk as mkoverlay, but runoverlay's session is too
-        // long-lived to babysit with drain threads.
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // Capture output on drain threads that live as long as the child —
+        // cslol reports hook attempts/failures here, and discarding them left
+        // us blind to "runoverlay never attached" failures (2026-07-12).
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
     {
         Ok(c) => c,
@@ -288,6 +288,27 @@ pub fn mk_run_overlay(
             return Ok(1);
         }
     };
+    if let Some(pipe) = run_child.stdout.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                let line = line.trim().to_string();
+                if !line.is_empty() {
+                    log_info!("[RUNOVERLAY] {line}");
+                }
+            }
+        });
+    }
+    if let Some(pipe) = run_child.stderr.take() {
+        std::thread::spawn(move || {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                let line = line.trim().to_string();
+                if !line.is_empty() {
+                    log_warn!("[RUNOVERLAY] {line}");
+                }
+            }
+        });
+    }
+    let run_child = run_child;
 
     if ENABLE_RUNOVERLAY_PRIORITY_BOOST {
         boost_priority(run_child.id());
