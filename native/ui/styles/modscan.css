@@ -1,0 +1,59 @@
+/* ModScan (mod malware scanner) — uses neon.css tokens. */
+.ms-wrap { display: flex; flex-direction: column; gap: 14px; }
+.ms-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ms-tag { color: var(--muted); font-size: 13px; max-width: 640px; margin-top: 4px; line-height: 1.5; }
+.ms-card { display: flex; flex-direction: column; gap: 12px; }
+.ms-card-title { font-weight: 600; font-size: 15px; color: var(--text-primary); }
+
+.ms-scanning { flex-direction: row; align-items: center; gap: 12px; color: var(--text-secondary); font-size: 13px; }
+.ms-spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.14); border-top-color: var(--cyan); animation: msSpin .7s linear infinite; flex: 0 0 auto; }
+@keyframes msSpin { to { transform: rotate(360deg); } }
+
+.ms-summary { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); }
+.ms-summary b { color: var(--text-primary); font-size: 15px; }
+.ms-sum-ok { color: var(--green); }
+.ms-sum-bad { color: var(--amber); }
+.ms-summary-warn .ms-sum-bad { font-weight: 700; }
+
+.ms-flagged-list { display: flex; flex-direction: column; gap: 8px; }
+.ms-frow { padding: 11px 12px; border-radius: 10px; background: rgba(255,84,112,0.06); border: 1px solid rgba(255,84,112,0.28); }
+.ms-frow-err { background: rgba(255,255,255,0.03); border-color: var(--glass-border); }
+.ms-frow-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ms-frow-name { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ms-showclean { font-size: 11px; color: var(--text-muted); cursor: pointer; }
+.ms-showclean:hover { color: var(--text-primary); }
+.ms-clean-list { display: flex; flex-direction: column; gap: 4px; }
+.ms-crow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; border-radius: 8px; background: rgba(255,255,255,0.03); font-size: 12px; }
+.ms-crow-name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ms-findings { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.ms-finding { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; }
+.ms-fdot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
+.ms-fcode { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .02em; color: var(--text-primary); }
+.ms-fentry { color: var(--cyan-soft); font-family: var(--font-mono); font-size: 10.5px; }
+.ms-fdetail { color: var(--text-secondary); margin-top: 2px; }
+.ms-vt { font-family: var(--font-mono); font-size: 11px; color: var(--amber); margin-top: 6px; }
+
+.ms-empty { color: var(--text-secondary); font-size: 13px; padding: 8px 2px; }
+
+.ms-ilist { display: flex; flex-direction: column; }
+.ms-irow-wrap { border-bottom: 1px solid var(--line-soft); padding: 11px 0; }
+.ms-irow-wrap:last-child { border-bottom: none; }
+.ms-irow { display: flex; align-items: center; gap: 14px; }
+.ms-irow-main { flex: 1; min-width: 0; }
+.ms-irow-name { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-irow-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.ms-irow-detail { padding: 0 2px; margin-top: 8px; }
+
+.ms-v-ok { color: var(--green); border-color: rgba(51,224,160,0.33); background: rgba(51,224,160,0.09); }
+.ms-v-warn { color: var(--amber); border-color: rgba(230,162,60,0.45); background: rgba(230,162,60,0.12); }
+.ms-v-bad { color: var(--red); border-color: rgba(255,84,112,0.55); background: rgba(255,84,112,0.16); font-weight: 800; box-shadow: 0 0 12px rgba(255,84,112,0.25); }
+.ms-v-err, .ms-v-none { color: var(--text-muted); border-color: var(--glass-border); background: rgba(255,255,255,0.04); }
+.ms-dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; background: currentColor; }
+
+.ms-manual { display: flex; flex-direction: column; gap: 10px; }
+.ms-manual-row { display: flex; gap: 10px; }
+.ms-manual-input { flex: 1; width: auto; text-align: left; }
+.ms-manual-result { padding: 11px 12px; border-radius: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--glass-border); }
+.ms-manual-result-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

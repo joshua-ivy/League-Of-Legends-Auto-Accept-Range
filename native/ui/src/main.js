@@ -70,6 +70,7 @@ const NAV = [
   { page: "dashboard", label: "Dashboard", glyph: "dashboard" },
   { page: "profile", label: "Profile", glyph: "profile" },
   { page: "skins", label: "Skins", glyph: "skin" },
+  { page: "modscan", label: "ModScan", glyph: "shield" },
   { page: "studio", label: "Studio", glyph: "bolt" },
   { page: "activity", label: "Activity", glyph: "activity" },
   { page: "settings", label: "Settings", glyph: "settings" },
@@ -1095,6 +1096,7 @@ function renderPage() {
   else if (currentPage === "profile") { window.renderProfile?.(page); }
   else if (currentPage === "skins") { renderSkins(); }
   else if (currentPage === "library") { window.renderLibrary?.(page); }
+  else if (currentPage === "modscan") { window.renderModscan?.(page); }
   else if (currentPage === "studio") { window.renderStudio?.(page); }
   else if (currentPage === "activity") { renderActivity(); }
   else if (currentPage === "diagnostics") { renderDiagnostics(); }
