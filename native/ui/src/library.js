@@ -352,9 +352,11 @@
         </div>
         <div class="lb-mright">
           <div class="lb-mtitle-row"><div class="lb-mtitle">${esc(m.name)}</div><button class="lb-fav ${isFav ? "on" : ""}" data-fav="${esc(m.id)}" title="Favorite"><svg viewBox="0 0 24 24" width="14" height="14" fill="${isFav ? "currentColor" : "none"}" stroke="currentColor" stroke-width="1.8"><path d="M12 20.3S3.5 15.4 2.6 9.9C2 6.6 4.6 4 7.5 4c1.9 0 3.4 1 4.5 2.6C13.1 5 14.6 4 16.5 4c2.9 0 5.5 2.6 4.9 5.9-.9 5.5-9.4 10.4-9.4 10.4z"/></svg></button></div>
-          <div class="lb-mby">by <b>${esc(m.author)}</b>${m.updatedHrs != null ? " · updated " + esc(fmtAgo(m.updatedHrs)) : ""}${m.view ? ` · <a href="#" class="lb-rf" data-view="${esc(m.view)}">View on RuneForge ↗</a>` : ""}</div>
+          <div class="lb-mby">by <b>${esc(m.author)}</b>${m.updatedHrs != null ? " · updated " + esc(fmtAgo(m.updatedHrs)) : ""}</div>
           <div class="lb-mchips"><span class="chip ${m.working ? "lb-chip-ok" : "lb-chip-warn"}"><span class="lb-dot on"></span>${m.working ? "WORKING" : "BROKEN ON PATCH"}</span><span class="chip lb-chip-n">${esc(m.category)}</span></div>
           <div class="lb-mstats"><span>${fmtN(m.views)} views</span><span>↓ ${fmtN(m.installs)}</span><span>♥ ${fmtN(m.likes)}</span></div>
+          ${m.description ? `<div class="lb-mdesc">${esc(m.description)}</div>` : ""}
+          ${m.view ? `<a href="#" class="lb-rflink" data-view="${esc(m.view)}"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>View on RuneForge</a>` : ""}
           <div class="lb-maction">${action}<div class="lb-mfoot">Installs straight to Chud. In champ select, click the <b>Custom Mods</b> button and pick it when this champion is up.</div></div>
         </div>
       </div>
