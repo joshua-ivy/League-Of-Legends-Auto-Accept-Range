@@ -136,6 +136,13 @@ pub fn pengu_loader_resource_dir() -> PathBuf {
     resources_root().join("pengu-loader")
 }
 
+/// Quiet presence check for the required CSLOL tools — no logging, safe to
+/// call at high frequency (the injection safety policy consults this on
+/// every gated operation and from UI polls).
+pub fn tools_present(tools_dir: &Path) -> bool {
+    REQUIRED_TOOLS.iter().all(|tool| tools_dir.join(tool).exists())
+}
+
 /// Check if all required CSLOL tools are present (ported from
 /// `ToolsManager.check_tools_available`).
 pub fn check_tools_available(tools_dir: &Path) -> bool {

@@ -93,7 +93,7 @@ pub fn mark_champion_changed(champion_id: i64) {
 pub async fn on_lobby_entered(app: AppHandle, skins: Arc<SkinsState>) {
     let _ = &app;
     let Some(auth) = lcu::cached_auth() else { return };
-    let client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
+    let client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
 
     let was_swiftplay = skins.shared.lock_safe().is_swiftplay_mode;
     let mode = lcu_ext::detect_game_mode(&client, &auth).await;
@@ -217,7 +217,7 @@ async fn extract_tracked_skins(skins: &Arc<SkinsState>) {
     // `trigger_swiftplay_injection`.
     let active_ids = match lcu::cached_auth() {
         Some(auth) => {
-            let client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
+            let client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
             lcu_ext::get_swiftplay_dual_champion_selection(&client, &auth).await.map(|dual| {
                 dual.champions.iter().map(|c| c.champion_id).filter(|&id| id > 0).collect::<HashSet<i64>>()
             })

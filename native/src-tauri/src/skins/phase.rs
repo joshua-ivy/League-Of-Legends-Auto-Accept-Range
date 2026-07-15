@@ -163,7 +163,7 @@ async fn run(
     let mut disconnected = false;
     let mut last_locked_champion_id: Option<i64> = None;
     let mut scraper_cache = ChampionSkinCache::default();
-    let client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
+    let client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
 
     let mut poll_timer = tokio::time::interval(POLL_INTERVAL);
     poll_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

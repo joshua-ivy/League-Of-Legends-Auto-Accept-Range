@@ -186,7 +186,7 @@ pub fn spawn(app: AppHandle, skins: Arc<SkinsState>, injection: Arc<InjectionMan
     let handle = BridgeHandle(Arc::new(BridgeInner { tx, port }));
 
     let mod_storage = Arc::new(ModStorageService::new(paths::mods_dir()));
-    let http_client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
+    let http_client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
 
     let ctx = BridgeContext {
         app,

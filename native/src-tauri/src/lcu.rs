@@ -86,9 +86,19 @@ pub fn invalidate_auth() {
     *AUTH_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-pub fn build_client(timeout_secs: f64) -> reqwest::Client {
+/// Build a client for talking to the LCU. MUST ONLY be used against
+/// `auth.base_url` (`https://127.0.0.1:<port>`, from the lockfile) — it
+/// relaxes cert validation for the LCU's self-signed loopback cert, which
+/// would be a hard TLS-bypass footgun against any real internet host.
+/// External requests (Chud's Workers, GitHub) belong on
+/// `net::build_external_client` instead, which validates certs normally.
+/// Redirects are disabled outright: the LCU never redirects, so a redirect
+/// response can only be a bug or an attempt to walk this loopback-trusting
+/// client off of loopback.
+pub fn build_lcu_client(timeout_secs: f64) -> reqwest::Client {
     reqwest::Client::builder()
         .danger_accept_invalid_certs(true) // LCU self-signed cert on 127.0.0.1
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs_f64(timeout_secs.max(0.5)))
         .build()
         .expect("failed to build reqwest client")
@@ -99,7 +109,7 @@ pub fn build_client(timeout_secs: f64) -> reqwest::Client {
 /// image (the Profile view can fetch 100+ icons in a burst).
 pub fn asset_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| build_client(5.0))
+    CLIENT.get_or_init(|| build_lcu_client(5.0))
 }
 
 pub async fn get_phase(client: &reqwest::Client, auth: &Auth) -> Option<String> {

@@ -102,14 +102,24 @@ impl From<std::string::FromUtf8Error> for DownloadError {
     }
 }
 
-/// `Chud/{version}` User-Agent header — see the rebrand map in
-/// `docs/SKINS_PORT.md` §1.
-fn user_agent() -> String {
-    format!("Chud/{}", env!("CARGO_PKG_VERSION"))
-}
-
+/// GitHub-only client (repo ZIP + hash shards). Delegates to
+/// `net::build_external_client` (P0-B) — which sets its own `Chud/{version}`
+/// User-Agent (see the rebrand map in `docs/SKINS_PORT.md` §1) — so it gets
+/// default cert validation, HTTPS-only, and a redirect policy re-validated
+/// against the allowlist on every hop, on top of the long safety timeout
+/// this module already relies on for slow multi-minute transfers (see
+/// `STREAM_SAFETY_TIMEOUT_S`'s doc comment — that's still applied
+/// per-request by `stream_get`/`simple_get`, which override whatever
+/// default this sets). GitHub's hosts are in `net`'s built-in allowlist, so
+/// no config lookup is needed here.
+///
+/// Deliberately does NOT route through `net::get_bytes_checked` — this
+/// module's own `stream_get`/`simple_get` need to see a 403/429 status
+/// directly (GitHub's anonymous rate limit) to decide "don't retry", and
+/// `get_bytes_checked`'s `error_for_status()` would collapse that into a
+/// generic error before the rate-limit check ever ran.
 pub(crate) fn build_client() -> Result<reqwest::Client, DownloadError> {
-    Ok(reqwest::Client::builder().user_agent(user_agent()).build()?)
+    Ok(crate::net::build_external_client(STREAM_SAFETY_TIMEOUT_S as f64, crate::net::built_in_allowed_origins()))
 }
 
 /// Stream `url` into memory, invoking `progress(baseline + done, total)` per

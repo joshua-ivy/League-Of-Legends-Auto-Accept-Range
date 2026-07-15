@@ -10,9 +10,11 @@ mod config;
 mod input;
 mod lcu;
 mod lcu_ws;
+mod net;
 mod profile;
 mod runes;
 mod safety;
+mod safety_manager;
 mod skins;
 mod stats;
 mod winutil;
@@ -41,7 +43,14 @@ pub struct AppState {
     /// before spawning; the task clears it when it exits.
     pub ws_active: AtomicBool,
     pub auto_range_running: AtomicBool,
-    pub injection_blocked: AtomicBool, // ranked kill-switch (shared by injection tools)
+    /// Ranked kill-switch consumed by Auto-Range's hold loop. Maintained by
+    /// the ALWAYS-RUNNING safety monitor (`safety_manager::spawn_safety_monitor`),
+    /// not by any individual tool. Skin injection does NOT read this — it
+    /// goes through `safety_manager::evaluate_injection_policy`.
+    pub injection_blocked: AtomicBool,
+    /// Live gameflow/queue snapshot + policy state for the injection safety
+    /// gates (P0-A) — see `safety_manager.rs`.
+    pub safety: safety_manager::SafetyManager,
     pub chat_open: AtomicBool,         // in-game chat open -> release the key
     pub chat_listener_started: AtomicBool,
     pub game_focused: AtomicBool,      // published by tool loops; read by the chat hook (no Win32 in the hook)
@@ -293,7 +302,7 @@ async fn get_profile(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_jso
         Some(a) => a,
         None => return Ok(json!({ "clientOnline": false })),
     };
-    let client = lcu::build_client(timeout);
+    let client = lcu::build_lcu_client(timeout);
     let result = profile::build_profile(&client, &auth).await;
     // Stale cached auth (client restarted) → drop it so the next call refinds.
     if result.get("clientOnline").and_then(|v| v.as_bool()) == Some(false) {
@@ -393,6 +402,8 @@ fn get_diagnostics(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
             "autoRange": state.auto_range_running.load(Ordering::SeqCst),
             "injectionBlocked": state.injection_blocked.load(Ordering::SeqCst),
             "injectionAck": cfg.safety.injection_ack,
+            "skinsAckVersion": cfg.safety.skins_ack_version,
+            "injectionPolicy": injection_policy_json(&state),
         },
         "hotkeys": { "autoRange": "none (always-on while armed)" },
         "config": {
@@ -450,10 +461,30 @@ fn skins_diagnostics_value(checks: &SkinsStatusChecks, bridge_port: Option<u16>)
     })
 }
 
+/// Current injection-policy decision as UI JSON (`{allowed, code, message}`).
+/// Overrides with `ACTIVE_JOB` when a job is in flight — the policy function
+/// itself deliberately doesn't read the job flag (see its LOCKING NOTE); a
+/// command thread holds no injection locks, so reading it here is safe.
+fn injection_policy_json(state: &AppState) -> serde_json::Value {
+    let busy = {
+        let mgr = state.skins_injection.lock_safe().clone();
+        mgr.is_some_and(|m| m.injection_in_progress())
+    };
+    let decision = safety_manager::evaluate_injection_policy(state, safety_manager::InjectionOp::Build);
+    if busy {
+        if let safety_manager::InjectionDecision::Allowed(_) = decision {
+            let d = safety_manager::InjectionDenial::ActiveJob;
+            return json!({ "allowed": false, "code": d.code(), "message": d.message(), "phase": null, "queueId": null });
+        }
+    }
+    decision.to_json()
+}
+
 /// The Skins page's full state payload — same "one snapshot fn behind a thin
 /// command" shape `snapshot()`/`get_state` already use for the dashboard.
 fn skins_snapshot(state: &AppState) -> serde_json::Value {
     let cfg = state.config.lock_safe().skins.clone();
+    let ack_version = state.config.lock_safe().safety.skins_ack_version;
     let bridge_port = state.skins_bridge.lock_safe().as_ref().map(|b| b.port());
     let checks = skins_status_checks();
     let party = match state.skins_party.lock_safe().as_ref() {
@@ -462,6 +493,12 @@ fn skins_snapshot(state: &AppState) -> serde_json::Value {
     };
     json!({
         "enabled": cfg.enabled,
+        // Versioned backend consent (P0-A): the UI unlocks skins actions only
+        // off ackOk, and the backend policy enforces it regardless.
+        "ackOk": ack_version >= safety_manager::CURRENT_SKINS_ACK_VERSION,
+        "ackVersion": ack_version,
+        "ackRequiredVersion": safety_manager::CURRENT_SKINS_ACK_VERSION,
+        "policy": injection_policy_json(state),
         "bridgePort": bridge_port,
         "penguActive": checks.pengu_active,
         "skinsDownloaded": checks.skins_downloaded,
@@ -512,10 +549,39 @@ fn skins_save_settings(settings: serde_json::Value, state: tauri::State<Arc<AppS
         cfg.skins.monitor_auto_resume_timeout_secs
     };
     state.config_gen.fetch_add(1, Ordering::SeqCst);
-    if let Some(mgr) = state.skins_injection.lock_safe().as_ref() {
+    // Clone the Arc out and DROP the `skins_injection` guard before calling
+    // into the manager: `set_auto_resume_timeout` takes the manager's inner
+    // + monitor locks, and the injection pipeline's policy hook now runs
+    // while those are held — holding this guard across the call would create
+    // a lock-order inversion.
+    let mgr = state.skins_injection.lock_safe().clone();
+    if let Some(mgr) = mgr {
         mgr.set_auto_resume_timeout(auto_resume);
     }
     skins_snapshot(&state)
+}
+
+/// Persist the versioned skin-injection risk acknowledgement (P0-A).
+/// `accepted: true` stamps the CURRENT disclosure version; `false` revokes
+/// (back to 0). The safety policy denies every injection entrypoint with
+/// `CONSENT_MISSING` while the stored version is below the current one, so
+/// revocation takes effect immediately — including mid-champ-select.
+#[tauri::command]
+fn skins_set_ack(accepted: bool, app: AppHandle, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    {
+        let mut cfg = state.config.lock_safe();
+        cfg.safety.skins_ack_version = if accepted { safety_manager::CURRENT_SKINS_ACK_VERSION } else { 0 };
+        let _ = cfg.save();
+    }
+    state.config_gen.fetch_add(1, Ordering::SeqCst);
+    emit_state(&app, &state);
+    skins_snapshot(&state)
+}
+
+/// Live injection-policy decision for the UI (typed code + verbatim message).
+#[tauri::command]
+fn skins_injection_policy(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    injection_policy_json(&state)
 }
 
 /// Kick off the skin + hash download pipeline on the async runtime and
@@ -597,11 +663,10 @@ fn skins_activate_pengu(state: tauri::State<Arc<AppState>>) -> Result<serde_json
     }
 }
 
-/// Persist the Skins master enable/disable flag. Advisory only this
-/// milestone: it is not yet wired to gate the phase actor/bridge/ticker
-/// themselves (those already run unconditionally per `docs/SKINS_PORT.md`'s
-/// "always spawned, just idles" note) — deeper subsystem gating is future
-/// work; this just persists the flag and reflects it back in state.
+/// Persist the Skins master enable/disable flag. ENFORCED (P0-A): the safety
+/// policy denies every injection entrypoint (build, suspend, LCU patch,
+/// run-overlay) with `DISABLED` while this is off — the phase actor/bridge/
+/// ticker still run and idle, but nothing they trigger can execute.
 #[tauri::command]
 fn skins_set_enabled(enabled: bool, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     {
@@ -729,13 +794,16 @@ fn skins_party_get_state(state: tauri::State<Arc<AppState>>) -> serde_json::Valu
 /// auto-accept/skins subsystems.
 fn spawn_runes_auto_import(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
-        let http = lcu::build_client(6.0);
+        // LCU-only client (champ-select reads + rune/spell/item writes). The
+        // Worker fetch below gets its OWN external client — the LCU's
+        // `danger_accept_invalid_certs` must never be reused off loopback.
+        let http = lcu::build_lcu_client(6.0);
         let mut last_champ: Option<i64> = None;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let (enabled, auto, endpoint, sort) = {
+            let (enabled, auto, endpoint, sort, allowed) = {
                 let c = state.config.lock_safe();
-                (c.runes.enabled, c.runes.auto_import, c.runes.endpoint.clone(), c.runes.sort.clone())
+                (c.runes.enabled, c.runes.auto_import, c.runes.endpoint.clone(), c.runes.sort.clone(), net::allowed_origins(&c))
             };
             if !enabled || !auto || endpoint.trim().is_empty() {
                 last_champ = None;
@@ -747,7 +815,8 @@ fn spawn_runes_auto_import(state: Arc<AppState>) {
             };
             match runes::locked_champ_and_role(&http, &auth).await {
                 Some((champ, role, mode)) if last_champ != Some(champ) => {
-                    if let Some(build) = runes::fetch_build(&http, &endpoint, champ, &role, &mode, &sort).await {
+                    let ext_http = net::build_external_client(10.0, allowed.clone());
+                    if let Some(build) = runes::fetch_build(&ext_http, &allowed, &endpoint, champ, &role, &mode, &sort).await {
                         let applied = runes::apply_build(&http, &auth, &build).await;
                         if applied.runes {
                             last_champ = Some(champ);
@@ -768,7 +837,7 @@ fn spawn_runes_auto_import(state: Arc<AppState>) {
 /// on, and restores `chat` once when it's turned off. Pure LCU write.
 fn spawn_appear_offline(state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
-        let http = lcu::build_client(6.0);
+        let http = lcu::build_lcu_client(6.0);
         let mut was_enabled = false;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -802,7 +871,7 @@ async fn set_appear_offline(enabled: bool, state: tauri::State<'_, Arc<AppState>
         let _ = c.save();
     }
     if let Some(auth) = lcu::cached_auth() {
-        let http = lcu::build_client(6.0);
+        let http = lcu::build_lcu_client(6.0);
         let body = serde_json::json!({ "availability": if enabled { "offline" } else { "chat" } });
         let _ = lcu::request_json(&http, &auth, reqwest::Method::PUT, "/lol-chat/v1/me", Some(&body)).await;
     }
@@ -841,15 +910,18 @@ async fn library_catalog(
     page: Option<u32>,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let endpoint = { state.config.lock_safe().library.endpoint.clone() };
+    let (endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        (c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
     let base = endpoint.trim_end_matches('/');
     let mut params: Vec<(&str, String)> = vec![("page", page.unwrap_or(0).to_string())];
     if let Some(s) = search.filter(|s| !s.trim().is_empty()) { params.push(("search", s)); }
     if let Some(c) = champion.filter(|s| !s.trim().is_empty()) { params.push(("champion", c)); }
     if let Some(c) = category.filter(|s| !s.trim().is_empty()) { params.push(("category", c)); }
-    let http = lcu::build_client(10.0);
-    let resp = http.get(format!("{base}/catalog")).query(&params).send().await.map_err(|e| e.to_string())?;
-    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    let http = net::build_external_client(10.0, allowed.clone());
+    let url = reqwest::Url::parse_with_params(&format!("{base}/catalog"), &params).map_err(|e| e.to_string())?;
+    net::get_json_checked(&http, url.as_str(), &allowed, 16 * 1024 * 1024).await
 }
 
 /// Legacy Library download dir (pre-2.0 installs landed here). Kept only so
@@ -898,10 +970,13 @@ fn sanitize_mod_filename(name: &str, fallback: &str) -> String {
 /// The full catalog in one shot (the Library page filters it client-side).
 #[tauri::command]
 async fn library_catalog_all(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-    let endpoint = { state.config.lock_safe().library.endpoint.clone() };
-    let http = lcu::build_client(20.0);
-    let resp = http.get(format!("{}/all", endpoint.trim_end_matches('/'))).send().await.map_err(|e| e.to_string())?;
-    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    let (endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        (c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
+    let http = net::build_external_client(20.0, allowed.clone());
+    let url = format!("{}/all", endpoint.trim_end_matches('/'));
+    net::get_json_checked(&http, &url, &allowed, 16 * 1024 * 1024).await
 }
 
 /// Installed mods + favorites + auto-update flag (for UI hydration).
@@ -964,6 +1039,7 @@ pub(crate) async fn place_library_mod(
     app: Option<&AppHandle>,
     base: &str,
     http: &reqwest::Client,
+    allowed: &std::collections::HashSet<String>,
     mod_id: &str,
     name: &str,
     champ: &str,
@@ -983,20 +1059,19 @@ pub(crate) async fn place_library_mod(
         }
     };
 
-    let dl = http
-        .get(format!("{base}/download/{mod_id}"))
-        .send()
+    // Resolve URL: the Worker's small JSON response (capped generously; it's
+    // never more than a URL + metadata).
+    let dl = net::get_json_checked(http, &format!("{base}/download/{mod_id}"), allowed, 16 * 1024 * 1024)
         .await
-        .map_err(|e| { log_warn!("[LIBRARY] download-resolve failed for {mod_id}: {e}"); e.to_string() })?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| { log_warn!("[LIBRARY] download-resolve failed for {mod_id}: {e}"); e })?;
     let url = dl.get("url").and_then(|v| v.as_str()).ok_or("could not resolve download")?.to_string();
-    let bytes = http.get(&url).send().await.map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
+    // Binary .fantome/.zip download — capped at 512MB (bundle-sized announcer/
+    // skin packs stay well under this; this is a sanity ceiling, not a target).
+    let raw_bytes = net::get_bytes_checked(http, &url, allowed, 512 * 1024 * 1024).await?;
     // A tiny body is the Worker's 404 ("not found") — the file isn't mirrored /
     // resolvable yet. Treat as a real failure so a bundle reports it, not a
     // 9-byte .fantome written to disk.
-    if bytes.len() < 1024 {
+    if raw_bytes.len() < 1024 {
         return Err(format!("'{name}' isn't available yet (still mirroring) — try again shortly."));
     }
 
@@ -1008,7 +1083,7 @@ pub(crate) async fn place_library_mod(
         if let Some(app) = app {
             let _ = app.emit("library-install-phase", json!({ "modId": mod_id, "phase": "converting" }));
         }
-        let original = bytes.to_vec();
+        let original = raw_bytes.clone();
         let converted = tokio::task::spawn_blocking(move || skins::announcer_fix::retarget_announcer_pack(&original))
             .await
             .map_err(|e| e.to_string())?;
@@ -1016,11 +1091,11 @@ pub(crate) async fn place_library_mod(
             Some(fixed) => fixed,
             None => {
                 log_warn!("[LIBRARY] announcer pack '{name}' has no global announcer banks - installed as-is");
-                bytes.to_vec()
+                raw_bytes
             }
         }
     } else {
-        bytes.to_vec()
+        raw_bytes
     };
     let size_mb = (bytes.len() as f64) / 1_048_576.0;
 
@@ -1068,9 +1143,12 @@ async fn library_install(
     category: Option<String>,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let endpoint = { state.config.lock_safe().library.endpoint.clone() };
-    let http = lcu::build_client(180.0);
-    let rec = place_library_mod(Some(&app), endpoint.trim_end_matches('/'), &http, &mod_id, &name, &champ, champ_id, &category.unwrap_or_default()).await?;
+    let (endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        (c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
+    let http = net::build_external_client(180.0, allowed.clone());
+    let rec = place_library_mod(Some(&app), endpoint.trim_end_matches('/'), &http, &allowed, &mod_id, &name, &champ, champ_id, &category.unwrap_or_default()).await?;
     {
         let mut c = state.config.lock_safe();
         c.library.installed.insert(mod_id, rec.clone());
@@ -1083,10 +1161,13 @@ async fn library_install(
 /// details + `ready` (mirrored) flags for the Library/Dashboard UI.
 #[tauri::command]
 async fn library_bundles(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-    let endpoint = { state.config.lock_safe().library.endpoint.clone() };
-    let http = lcu::build_client(20.0);
-    let resp = http.get(format!("{}/bundles", endpoint.trim_end_matches('/'))).send().await.map_err(|e| e.to_string())?;
-    resp.json::<serde_json::Value>().await.map_err(|e| e.to_string())
+    let (endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        (c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
+    let http = net::build_external_client(20.0, allowed.clone());
+    let url = format!("{}/bundles", endpoint.trim_end_matches('/'));
+    net::get_json_checked(&http, &url, &allowed, 16 * 1024 * 1024).await
 }
 
 /// Install a whole champion bundle in one shot: every skin lands in that
@@ -1101,9 +1182,12 @@ async fn library_install_bundle(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<serde_json::Value, String> {
     use skins::slog::{log_info, log_warn};
-    let endpoint = { state.config.lock_safe().library.endpoint.clone() };
+    let (endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        (c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
     let base = endpoint.trim_end_matches('/').to_string();
-    let http = lcu::build_client(180.0);
+    let http = net::build_external_client(180.0, allowed.clone());
     log_info!("[LIBRARY] installing bundle '{champ}' ({} skins)", skins.len());
 
     let mut recs: Vec<(String, config::InstalledMod)> = Vec::new();
@@ -1114,7 +1198,7 @@ async fn library_install_bundle(
         if id.is_empty() {
             continue;
         }
-        match place_library_mod(None, &base, &http, &id, &nm, &champ, champ_id, "champion_skin").await {
+        match place_library_mod(None, &base, &http, &allowed, &id, &nm, &champ, champ_id, "champion_skin").await {
             Ok(rec) => recs.push((id, rec)),
             Err(e) => { log_warn!("[LIBRARY] bundle '{champ}' skin '{nm}' skipped: {e}"); failed.push(nm); }
         }
@@ -1159,9 +1243,9 @@ fn library_remove(mod_id: String, state: tauri::State<Arc<AppState>>) -> serde_j
 /// champ-lock calls the same `runes::import_now`. No Riot Web API key involved.
 #[tauri::command]
 async fn runes_import_now(state: tauri::State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
-    let (enabled, endpoint, sort) = {
+    let (enabled, endpoint, sort, allowed) = {
         let c = state.config.lock_safe();
-        (c.runes.enabled, c.runes.endpoint.clone(), c.runes.sort.clone())
+        (c.runes.enabled, c.runes.endpoint.clone(), c.runes.sort.clone(), net::allowed_origins(&c))
     };
     if !enabled {
         return Err("Rune import is turned off — enable it in Settings first.".to_string());
@@ -1172,8 +1256,9 @@ async fn runes_import_now(state: tauri::State<'_, Arc<AppState>>) -> Result<serd
     let Some(auth) = lcu::cached_auth() else {
         return Err("League client isn't running.".to_string());
     };
-    let http = lcu::build_client(6.0);
-    let applied = runes::import_now(&http, &auth, &endpoint, &sort).await;
+    let http = lcu::build_lcu_client(6.0);
+    let ext_http = net::build_external_client(6.0, allowed.clone());
+    let applied = runes::import_now(&http, &auth, &ext_http, &allowed, &endpoint, &sort).await;
     if !applied.runes && !applied.spells && !applied.items {
         return Err("Couldn't import — be in champ select with a champion picked, and make sure a build exists for it.".to_string());
     }
@@ -1308,6 +1393,7 @@ pub fn run() {
         ws_active: AtomicBool::new(false),
         auto_range_running: AtomicBool::new(false),
         injection_blocked: AtomicBool::new(false),
+        safety: safety_manager::SafetyManager::new(),
         chat_open: AtomicBool::new(false),
         chat_listener_started: AtomicBool::new(false),
         game_focused: AtomicBool::new(false),
@@ -1357,6 +1443,8 @@ pub fn run() {
             get_profile,
             skins_get_state,
             skins_save_settings,
+            skins_set_ack,
+            skins_injection_policy,
             skins_download,
             skins_activate_pengu,
             skins_set_enabled,
@@ -1451,10 +1539,20 @@ pub fn run() {
                 skins::paths::skins_dir(),
                 skins::paths::injection_overlay_dir(),
             ));
+            // P0-A: wire the safety policy hook into the injection pipeline
+            // (manager entry, game-suspend watcher, mkoverlay/runoverlay) and
+            // start the ALWAYS-RUNNING ranked/queue monitor. Until the hook
+            // is set the pipeline fails closed; the monitor is what keeps the
+            // policy's gameflow snapshot fresh (a stale snapshot also denies).
+            injection_manager.set_policy_hook(safety_manager::make_policy_hook(st.clone()));
+            safety_manager::spawn_safety_monitor(handle.clone(), st.clone());
             // Apply the configured auto-resume safety timeout (defaults to
             // `GameMonitor`'s own 25s default; clamped 1..=180s either way).
-            injection_manager
-                .set_auto_resume_timeout(st.config.lock_safe().skins.monitor_auto_resume_timeout_secs);
+            // Bound to a local FIRST: holding the config guard across this
+            // call would invert the config->inner->monitor lock order the
+            // policy hook now establishes in the other direction.
+            let auto_resume_secs = st.config.lock_safe().skins.monitor_auto_resume_timeout_secs;
+            injection_manager.set_auto_resume_timeout(auto_resume_secs);
             // Startup sweep: auto-fix custom mods imported while Chud was
             // closed (scope champion skins, retarget announcer packs). Cheap
             // when nothing changed; ChampSelect entry re-sweeps for files

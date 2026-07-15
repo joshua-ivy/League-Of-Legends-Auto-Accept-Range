@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Threading::{OpenProcess, SetPriorityClass, HIGH_PRIORITY_CLASS, PROCESS_SET_INFORMATION};
 
+use crate::safety_manager::{InjectionDecision, InjectionDenial, InjectionOp, PolicyHook};
 use crate::skins::injection::game_monitor::GameMonitor;
 use crate::skins::injection::process::SharedOverlayProcess;
 use crate::skins::injection::tools::{hide_directory_recursive, ToolPaths};
@@ -89,12 +90,14 @@ enum BuildWait {
 /// Returns `Ok(0)` on success, or `Ok(<code>)` mirroring one of Python's
 /// sentinel return codes (`127` missing tool, `124` mkoverlay timeout, `125`
 /// build aborted because the game auto-resumed without it, `126` hook
-/// refused because the game loaded too long unsuspended, `1`
+/// refused because the game loaded too long unsuspended, `123` safety
+/// policy denial (P0-A, new — no Python equivalent), `1`
 /// general error, or the child's own nonzero exit code) — wrapped in
 /// `Result` per the S3 interface contract, but every failure path Python
 /// handled without raising stays an `Ok` here too; `Err` is reserved for
 /// setup failures Python didn't model as a return code (e.g. failing to
 /// create the overlay directory).
+#[allow(clippy::too_many_arguments)]
 pub fn mk_run_overlay(
     tools: &ToolPaths,
     mods_dir: &Path,
@@ -103,10 +106,21 @@ pub fn mk_run_overlay(
     mod_names: &[String],
     process: &SharedOverlayProcess,
     game_monitor: &mut GameMonitor,
+    policy: Option<&PolicyHook>,
 ) -> Result<i32, String> {
     if !tools.modtools.exists() {
         log_error!("[INJECTOR] Missing mod-tools.exe in {}", tools.modtools.display());
         return Ok(127);
+    }
+
+    // P0-A safety gate, re-checked immediately before the build (state may
+    // have changed since the entry check). A denial here must leave nothing
+    // behind: no child spawned yet, so just resume any suspended game and
+    // bail. `None` hook fails closed — an ungated build never runs.
+    if let Some(denial) = policy_denial(policy, InjectionOp::Build) {
+        log_error!("[SAFETY] mkoverlay blocked ({}) - {}", denial.code(), denial.message());
+        game_monitor.resume_if_suspended();
+        return Ok(123);
     }
 
     std::fs::create_dir_all(overlay_dir)
@@ -264,6 +278,17 @@ pub fn mk_run_overlay(
 
     log_info!("[INJECT] mkoverlay done - starting runoverlay");
 
+    // P0-A safety gate, re-checked immediately before the hook process
+    // starts — the build takes seconds, plenty of time for a queue/phase/
+    // consent change. A denial here aborts exactly like the auto-resume
+    // race above: clean up the built overlay and never hook the game.
+    if let Some(denial) = policy_denial(policy, InjectionOp::RunOverlay) {
+        log_error!("[SAFETY] runoverlay blocked ({}) - {}", denial.code(), denial.message());
+        cleanup_failed_build(mods_dir, overlay_dir);
+        game_monitor.resume_if_suspended();
+        return Ok(123);
+    }
+
     // ---- runoverlay ----
     let cfg = overlay_dir.join("cslol-config.json");
     log_info!("[INJECT] Running overlay");
@@ -339,6 +364,19 @@ pub fn mk_run_overlay(
     // when the game closes.
     log_info!("[INJECT] Overlay is live - injection complete");
     Ok(0)
+}
+
+/// Evaluate the safety policy for `op`; `Some(denial)` blocks the caller.
+/// A missing hook fails closed (`IntegrityFailed`) — by the time execution
+/// reaches this module the hook must have been wired in `setup()`.
+fn policy_denial(policy: Option<&PolicyHook>, op: InjectionOp) -> Option<InjectionDenial> {
+    match policy {
+        Some(hook) => match hook(op) {
+            InjectionDecision::Allowed(_) => None,
+            InjectionDecision::Denied(d) => Some(d),
+        },
+        None => Some(InjectionDenial::IntegrityFailed),
+    }
 }
 
 fn drain_pipe(pipe: impl Read) -> Vec<String> {

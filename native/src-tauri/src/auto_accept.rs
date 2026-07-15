@@ -63,7 +63,7 @@ pub async fn run(app: AppHandle, state: Arc<AppState>, generation: u64) {
             c.lcu.request_timeout,
         )
     };
-    let client = lcu::build_client(timeout);
+    let client = lcu::build_lcu_client(timeout);
     let mut auth: Option<lcu::Auth> = None;
     let mut errors: u32 = 0;
     state.readycheck_handled.store(false, Ordering::SeqCst);

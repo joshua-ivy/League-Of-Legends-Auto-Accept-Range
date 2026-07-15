@@ -147,7 +147,7 @@ impl PartyManager {
     /// relay's default URL.
     pub fn new(app: &AppHandle, skins: Arc<SkinsState>, bridge: BridgeHandle) -> Arc<Self> {
         let relay_url = resolve_relay_url(app);
-        let http_client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
+        let http_client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
         Arc::new(Self {
             skins,
             app: app.clone(),
@@ -530,12 +530,17 @@ impl PartyManager {
                 return; // already attempted this session
             }
         }
-        let endpoint = { app_state.config.lock_safe().library.endpoint.clone() };
+        let (endpoint, allowed) = {
+            let c = app_state.config.lock_safe();
+            (c.library.endpoint.clone(), crate::net::allowed_origins(&c))
+        };
         let mgr = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             log_info!("[PARTY] Peer uses announcer '{name}' - downloading + converting so we hear it too");
-            let http = lcu::build_client(180.0);
-            match crate::place_library_mod(None, endpoint.trim_end_matches('/'), &http, &mod_id, &name, "", None, "announcer")
+            // External download (Chud's Library Worker), NOT the LCU — must not
+            // reuse the loopback-only, cert-relaxed LCU client.
+            let http = crate::net::build_external_client(180.0, allowed.clone());
+            match crate::place_library_mod(None, endpoint.trim_end_matches('/'), &http, &allowed, &mod_id, &name, "", None, "announcer")
                 .await
             {
                 Ok(rec) => {
