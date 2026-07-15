@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
+use crate::safety_manager::{InjectionDecision, InjectionDenial, InjectionOp, PolicyHook};
 use crate::skins::injection::game_monitor::GameMonitor;
 use crate::skins::injection::injector::SkinInjector;
 use crate::skins::slog::{log_error, log_info, log_warn};
@@ -61,6 +62,9 @@ pub struct InjectionManager {
     /// `self._injection_in_progress` boolean, checked before
     /// `injection_lock.acquire(timeout=...)`).
     injection_in_progress: AtomicBool,
+    /// Safety policy hook (P0-A) — consulted immediately before every gated
+    /// operation. `None` (never wired) FAILS CLOSED: all injection denied.
+    policy: Mutex<Option<PolicyHook>>,
     inner: Mutex<Inner>,
 }
 
@@ -81,6 +85,7 @@ impl InjectionManager {
             overlay_dir,
             game_dir: Mutex::new(None),
             injection_in_progress: AtomicBool::new(false),
+            policy: Mutex::new(None),
             inner: Mutex::new(Inner {
                 injector: None,
                 game_monitor: GameMonitor::new(),
@@ -99,6 +104,40 @@ impl InjectionManager {
     /// self-detected.
     pub fn set_game_dir(&self, game_dir: PathBuf) {
         *self.game_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(game_dir);
+    }
+
+    /// Wire the safety policy hook (P0-A). Called once from `setup()`.
+    /// Forwards a clone into the game monitor so the suspend path is gated
+    /// too. Until this is called, every injection entrypoint fails closed.
+    pub fn set_policy_hook(&self, hook: PolicyHook) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .game_monitor
+            .set_policy_hook(hook.clone());
+        *self.policy.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    fn policy_hook(&self) -> Option<PolicyHook> {
+        self.policy.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Evaluate the safety policy for `op`. `None` hook = fail closed
+    /// (`IntegrityFailed`): a build that can't consult the gates never runs.
+    fn check_policy(&self, op: InjectionOp) -> Result<(), InjectionDenial> {
+        match self.policy_hook() {
+            Some(hook) => match hook(op) {
+                InjectionDecision::Allowed(_) => Ok(()),
+                InjectionDecision::Denied(d) => Err(d),
+            },
+            None => Err(InjectionDenial::IntegrityFailed),
+        }
+    }
+
+    /// True while an injection job holds the pipeline (read by the UI's
+    /// policy view; the internal fast pre-check uses the atomic directly).
+    pub fn injection_in_progress(&self) -> bool {
+        self.injection_in_progress.load(Ordering::SeqCst)
     }
 
     /// Initialize the injector lazily when first needed (ported from
@@ -121,6 +160,7 @@ impl InjectionManager {
             self.zips_dir.clone(),
             self.overlay_dir.clone(),
             game_dir,
+            self.policy_hook(),
         ));
         inner.initialized = true;
         log_info!("[INJECT] Injection system initialized successfully");
@@ -213,9 +253,17 @@ impl InjectionManager {
         }
 
         // Fast pre-check ahead of the real lock (ported from Python's
-        // `self._injection_in_progress` boolean check).
+        // `self._injection_in_progress` boolean check). This IS the
+        // `ActiveJob` denial — the policy hook itself deliberately doesn't
+        // read this flag (see `evaluate_injection_policy`'s LOCKING NOTE).
         if self.injection_in_progress.load(Ordering::SeqCst) {
-            log_warn!("[INJECT] Injection already in progress - skipping request for: {skin_name}");
+            log_warn!("[SAFETY] Injection denied ({}) for {skin_name} - {}", InjectionDenial::ActiveJob.code(), InjectionDenial::ActiveJob.message());
+            return false;
+        }
+
+        // P0-A safety gate: evaluated immediately before the build starts.
+        if let Err(d) = self.check_policy(InjectionOp::Build) {
+            log_warn!("[SAFETY] Injection denied ({}) for {skin_name} - {}", d.code(), d.message());
             return false;
         }
 
@@ -274,7 +322,13 @@ impl InjectionManager {
         }
 
         if self.injection_in_progress.load(Ordering::SeqCst) {
-            log_warn!("[INJECT] Injection already in progress - skipping mods-only request");
+            log_warn!("[SAFETY] Mods-only injection denied ({}) - {}", InjectionDenial::ActiveJob.code(), InjectionDenial::ActiveJob.message());
+            return false;
+        }
+
+        // P0-A safety gate: evaluated immediately before the build starts.
+        if let Err(d) = self.check_policy(InjectionOp::Build) {
+            log_warn!("[SAFETY] Mods-only injection denied ({}) - {}", d.code(), d.message());
             return false;
         }
 
@@ -682,5 +736,37 @@ mod tests {
     fn clean_system_is_a_noop_true_when_never_initialized() {
         let mgr = InjectionManager::new(PathBuf::new(), PathBuf::new(), PathBuf::new(), PathBuf::new());
         assert!(mgr.clean_system());
+    }
+
+    #[test]
+    fn injection_without_policy_hook_fails_closed() {
+        // P0-A: an InjectionManager whose policy hook was never wired must
+        // deny every entrypoint (IntegrityFailed), not run ungated.
+        let mgr = InjectionManager::new(PathBuf::new(), PathBuf::new(), PathBuf::new(), PathBuf::new());
+        assert!(!mgr.inject_skin_immediately("skin_103001", None, None, Some(103), &[]));
+        assert!(!mgr.inject_mods_only_immediately(&["m".to_string()]));
+        assert!(!mgr.is_initialized(), "denied before any initialization");
+    }
+
+    #[test]
+    fn policy_hook_denial_blocks_and_allowance_reaches_the_pipeline() {
+        use crate::safety_manager::{InjectionContext, InjectionDecision, InjectionDenial, PolicyHook};
+        use std::sync::Arc;
+
+        let mgr = InjectionManager::new(PathBuf::new(), PathBuf::new(), PathBuf::new(), PathBuf::new());
+
+        let denies: PolicyHook = Arc::new(|_| InjectionDecision::Denied(InjectionDenial::Disabled));
+        mgr.set_policy_hook(denies);
+        assert!(!mgr.inject_mods_only_immediately(&["m".to_string()]));
+        assert!(!mgr.is_initialized(), "denied at the gate, never initialized");
+
+        let allows: PolicyHook = Arc::new(|op| {
+            InjectionDecision::Allowed(InjectionContext { op, phase: Some("ChampSelect".into()), queue_id: Some(430) })
+        });
+        mgr.set_policy_hook(allows);
+        // Past the gate now; fails later on the missing game dir (no League
+        // in the test environment) — which proves the denial above came from
+        // the policy, not from initialization.
+        assert!(!mgr.inject_mods_only_immediately(&["m".to_string()]));
     }
 }

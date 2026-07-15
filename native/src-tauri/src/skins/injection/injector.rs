@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::safety_manager::PolicyHook;
 use crate::skins::injection::game_monitor::GameMonitor;
 use crate::skins::injection::process::{self, SharedOverlayProcess};
 use crate::skins::injection::{overlay, storage, tools, zips};
@@ -23,10 +24,21 @@ pub struct SkinInjector {
     pub overlay_dir: PathBuf,
     pub game_dir: PathBuf,
     process: SharedOverlayProcess,
+    /// Safety policy hook (P0-A), forwarded into `overlay::mk_run_overlay`
+    /// so the build and run-overlay steps re-check the gates at execution
+    /// time (phase/queue can change between the entry check and here).
+    policy: Option<PolicyHook>,
 }
 
 impl SkinInjector {
-    pub fn new(tools_dir: PathBuf, mods_dir: PathBuf, zips_dir: PathBuf, overlay_dir: PathBuf, game_dir: PathBuf) -> Self {
+    pub fn new(
+        tools_dir: PathBuf,
+        mods_dir: PathBuf,
+        zips_dir: PathBuf,
+        overlay_dir: PathBuf,
+        game_dir: PathBuf,
+        policy: Option<PolicyHook>,
+    ) -> Self {
         let _ = std::fs::create_dir_all(&mods_dir);
         let _ = std::fs::create_dir_all(&zips_dir);
 
@@ -35,7 +47,7 @@ impl SkinInjector {
         // call — logged only, doesn't block construction).
         tools::check_tools_available(&tools_dir);
 
-        Self { tools_dir, mods_dir, zips_dir, overlay_dir, game_dir, process: process::new_shared_overlay_process() }
+        Self { tools_dir, mods_dir, zips_dir, overlay_dir, game_dir, process: process::new_shared_overlay_process(), policy }
     }
 
     /// Inject a single skin, with optional chroma and extra (party/category)
@@ -123,6 +135,7 @@ impl SkinInjector {
             &mod_names,
             &self.process,
             game_monitor,
+            self.policy.as_ref(),
         )
         .map_err(|e| e.to_string())?;
 
@@ -162,6 +175,7 @@ impl SkinInjector {
             mod_names,
             &self.process,
             game_monitor,
+            self.policy.as_ref(),
         )
         .map_err(|e| e.to_string())?;
 

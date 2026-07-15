@@ -1,10 +1,11 @@
 //! Auto-Range: hold the "show range" key while a live League game is focused,
-//! refreshing periodically so the indicator stays drawn. Two parts:
-//!   * a dedicated thread that does the timing-sensitive hold/refresh, and
-//!   * an async monitor that flips `injection_blocked` during a ranked game
-//!     (the anti-cheat kill-switch).
-//! The key is released whenever the game loses focus or a ranked game is
-//! detected. Operates openly — no evasion.
+//! refreshing periodically so the indicator stays drawn. A dedicated thread
+//! does the timing-sensitive hold/refresh; the ranked kill-switch it obeys
+//! (`AppState::injection_blocked`) is maintained by the ALWAYS-RUNNING
+//! safety monitor (`safety_manager::spawn_safety_monitor`) — it used to live
+//! here, which meant ranked detection only existed while Auto-Range was
+//! armed (P0-A). The key is released whenever the game loses focus or a
+//! ranked game is detected. Operates openly — no evasion.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -12,16 +13,12 @@ use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
 
-use crate::{emit_state, input::Injector, lcu, safety, winutil, AppState, LockExt};
+use crate::{emit_state, input::Injector, winutil, AppState, LockExt};
 
 pub fn start(app: AppHandle, state: Arc<AppState>, generation: u64) {
     // Start the global chat-key listener once (it can't be cleanly stopped).
     if !state.chat_listener_started.swap(true, Ordering::SeqCst) {
         start_chat_listener(state.clone());
-    }
-    {
-        let state = state.clone();
-        tauri::async_runtime::spawn(async move { ranked_monitor(state, generation).await });
     }
     std::thread::spawn(move || hold_loop(app, state, generation));
 }
@@ -145,34 +142,4 @@ fn hold_loop(app: AppHandle, state: Arc<AppState>, generation: u64) {
     // injector's Drop releases the key.
     state.game_focused.store(false, Ordering::SeqCst);
     emit_state(&app, &state);
-}
-
-async fn ranked_monitor(state: Arc<AppState>, generation: u64) {
-    let (block_enabled, timeout, interval) = {
-        let c = state.config.lock_safe();
-        (c.safety.block_in_ranked, c.lcu.request_timeout, c.safety.check_interval)
-    };
-    if !block_enabled {
-        return;
-    }
-    let client = lcu::build_client(timeout);
-    while state.auto_range_running.load(Ordering::SeqCst)
-        && state.auto_range_gen.load(Ordering::SeqCst) == generation
-    {
-        // Reuse the shared cached auth (avoids a full process scan each tick).
-        let block = match lcu::cached_auth() {
-            Some(auth) => match lcu::gameflow_session(&client, &auth).await {
-                Some(session) => safety::should_block(&session),
-                None => {
-                    lcu::invalidate_auth();
-                    false // client unreachable -> not in a game -> don't block
-                }
-            },
-            None => false,
-        };
-        state.injection_blocked.store(block, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_secs_f64(interval.max(1.0))).await;
-    }
-    // Auto-Range is the only injection tool now — always clear on exit.
-    state.injection_blocked.store(false, Ordering::SeqCst);
 }

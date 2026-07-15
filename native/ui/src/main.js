@@ -452,22 +452,20 @@ async function renderDiagnostics() {
 // in-client chroma/forms picker itself is the bundled CHUD-* Pengu Loader
 // plugins, not this page — see docs/SKINS_PORT.md.
 const DEFAULT_SKINS_STATE = {
-  enabled: false, bridgePort: null, penguActive: false, skinsDownloaded: false, hashesReady: false,
+  enabled: false, ackOk: false, ackVersion: 0, ackRequiredVersion: 1, policy: null,
+  bridgePort: null, penguActive: false, skinsDownloaded: false, hashesReady: false,
   leaguePath: "", injectionThresholdMs: 300, autoResumeSecs: 25, autoDownload: true,
   party: { enabled: false, my_token: null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [] },
   diagnostics: { bridgePort: null, penguActive: false, toolsAvailable: false, dllValid: false, skinsDownloaded: false, hashesReady: false, dataDir: "" },
 };
 let skinsState = null;
 let skinsCfg = null; // local editable copy of the injection-settings fields (snake_case — mirrors config::SkinsCfg, like DEFAULT_CONFIG/cfg above)
-// Local-only risk gate for skin-injection actions, deliberately SEPARATE from
-// the dashboard's `injectionAck` (that's the Vanguard input-injection risk;
-// this is the "modifies game files & suspends the client" ToS risk) — see
-// this feature's fix notes. Not persisted server-side (no config.skins field
-// for it), so it resets per browser/profile; that's an acceptable trade for
-// keeping the ack purely a front-end concern.
-const SKINS_ACK_KEY = "chud_skins_ack";
+// Skin-injection risk gate (the "modifies game files & suspends the client"
+// ToS risk — separate from the dashboard's Vanguard `injectionAck`). Now a
+// mirror of the BACKEND's versioned acknowledgement (config.safety.
+// skins_ack_version, via skins_get_state.ackOk) — the backend safety policy
+// enforces it on every injection entrypoint; this flag only drives the UI.
 let skinsAck = false;
-try { skinsAck = localStorage.getItem(SKINS_ACK_KEY) === "1"; } catch { /* localStorage unavailable (e.g. sandboxed preview) */ }
 let skinsDownloadActive = false;
 let skinsPollTimer = null;
 
@@ -501,6 +499,7 @@ const CC_OPTS = [
 
 async function loadSkinsState() {
   skinsState = (await invoke("skins_get_state")) || structuredClone(DEFAULT_SKINS_STATE);
+  skinsAck = !!skinsState.ackOk;
   skinsCfg = {
     league_path: skinsState.leaguePath || "",
     injection_threshold_ms: skinsState.injectionThresholdMs,
@@ -536,6 +535,8 @@ function skinsStatusCard() {
       ${skinsStatusRow("Game hashes", s.hashesReady, "Ready", "Not downloaded")}
       ${skinsStatusRow("CSLOL tools", d.toolsAvailable, "Present", "Missing")}
       ${skinsStatusRow("cslol-dll.dll", d.dllValid, "Verified", "Missing / unrecognized")}
+      ${(() => { const pol = s.policy || { allowed: false, code: "UNKNOWN", message: "" };
+        return `<div class="diag-row" title="${esc(pol.message || "")}"><span class="diag-k">Injection gate</span><span class="diag-v" style="color:${toneColor(pol.allowed ? "success" : "danger")}">${esc(pol.allowed ? "OPEN" : pol.code)}</span></div>`; })()}
     </div></div>`;
 }
 
@@ -774,7 +775,7 @@ async function renderSkins() {
     <div class="glass" style="display:flex;align-items:center;gap:16px">
       <div class="grow">
         <div class="set-card-title" style="margin-bottom:2px"><span class="ci">${ico("skin")}</span>Skin Injection</div>
-        <div class="dim" style="font-size:12px">Master switch — persists your preference; deeper gameflow gating is future work.</div>
+        <div class="dim" style="font-size:12px">Master switch — enforced by the backend safety gate: off means no injection can run.${skinsAck ? ` <a href="#" id="skinsRevokeAck" style="color:var(--magenta-soft)">Revoke risk acknowledgement</a>` : ""}</div>
       </div>
       <div class="tog ${skinsState.enabled ? "on" : ""} ${skinsAck ? "" : "disabled"}" ${skinsAck ? `data-skins-enable="1"` : ""}><div class="knob"></div></div>
     </div>
@@ -792,7 +793,21 @@ async function renderSkins() {
 
 function wireSkins() {
   const ack = document.getElementById("skinsAckBtn");
-  if (ack) ack.onclick = () => { skinsAck = true; try { localStorage.setItem(SKINS_ACK_KEY, "1"); } catch { /* ignore */ } renderSkins(); };
+  if (ack) ack.onclick = async () => {
+    // Backend-persisted, versioned consent — the safety policy gates every
+    // injection entrypoint on it (localStorage never gated anything).
+    const fresh = await invoke("skins_set_ack", { accepted: true });
+    if (fresh) { skinsState = fresh; skinsAck = !!fresh.ackOk; }
+    renderSkins();
+  };
+  const revoke = document.getElementById("skinsRevokeAck");
+  if (revoke) revoke.onclick = async (e) => {
+    e.preventDefault();
+    const fresh = await invoke("skins_set_ack", { accepted: false });
+    if (fresh) { skinsState = fresh; skinsAck = !!fresh.ackOk; }
+    toast("Acknowledgement revoked", "Skin injection is blocked until you accept the risk again.", "warning");
+    renderSkins();
+  };
 
   const enableTog = document.querySelector("[data-skins-enable]");
   if (enableTog) enableTog.onclick = async () => {
@@ -1154,6 +1169,7 @@ async function boot() {
     ev.listen("notification", (e) => { const n = e?.payload; if (n) toast(n.title || "Chud", n.message || n.msg || "", n.tone || "info"); });
     ev.listen("skins-download-progress", (e) => { if (currentPage === "skins") onSkinsDownloadProgress(e?.payload); });
     ev.listen("skins-download-done", (e) => { onSkinsDownloadDone(e?.payload); });
+    ev.listen("injection-denied", (e) => { const p = e?.payload; if (p) toast(`Injection blocked — ${p.code}`, p.message || "", "danger"); });
     ev.listen("update-available", (e) => showUpdatePill(e?.payload));
     ev.listen("update-progress", (e) => onUpdateProgress(e?.payload));
   }

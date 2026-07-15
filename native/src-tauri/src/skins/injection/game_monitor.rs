@@ -27,6 +27,7 @@ use sysinfo::{ProcessesToUpdate, System};
 use windows::Win32::Foundation::{CloseHandle, BOOL, HANDLE};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_SUSPEND_RESUME};
 
+use crate::safety_manager::{InjectionDecision, InjectionOp, PolicyHook};
 use crate::skins::slog::{log_error, log_info};
 
 // Undocumented `ntdll` whole-process suspend/resume. Linked directly against
@@ -127,6 +128,11 @@ struct MonitorState {
     /// without ever being frozen (anticheat refused `NtSuspendProcess`)
     /// must NOT be hooked late — see `unsuspended_game_age`.
     ever_suspended: bool,
+    /// Safety policy hook (P0-A): consulted immediately before every
+    /// `NtSuspendProcess`. `None` only in unit tests / before `setup()`
+    /// wires it — production monitors are only armed by an
+    /// `InjectionManager` whose own Build gate already passed.
+    policy: Option<PolicyHook>,
 }
 
 impl MonitorState {
@@ -140,6 +146,7 @@ impl MonitorState {
             auto_resumed: false,
             game_first_seen: None,
             ever_suspended: false,
+            policy: None,
         }
     }
 
@@ -172,6 +179,12 @@ impl GameMonitor {
     pub fn set_auto_resume_timeout(&mut self, secs: f64) {
         let clamped = secs.clamp(1.0, 180.0);
         self.state.lock_safe().auto_resume = Duration::from_secs_f64(clamped);
+    }
+
+    /// Wire the safety policy hook (P0-A) so the watcher gates every
+    /// suspend. Survives `start()`/`stop()` cycles.
+    pub fn set_policy_hook(&mut self, hook: PolicyHook) {
+        self.state.lock_safe().policy = Some(hook);
     }
 
     /// Start watching for the game and suspend it the moment it appears.
@@ -294,6 +307,24 @@ fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
         let mut interval = if checks_done < RAPID_CHECKS { RAPID_INTERVAL } else { HUNT_INTERVAL };
         checks_done = checks_done.saturating_add(1);
 
+        // P0-A safety gate, evaluated immediately before a suspend could
+        // happen. Deliberately evaluated OUTSIDE the MonitorState lock: the
+        // hook takes AppState locks (config, safety snapshot), and holding
+        // MonitorState across those would invert the established
+        // `skins_injection -> inner -> MonitorState` lock order.
+        let suspend_denial = if game_pid.is_some() {
+            let hook = {
+                let st = state.lock_safe();
+                if st.suspended.is_some() { None } else { st.policy.clone() }
+            };
+            hook.and_then(|h| match h(InjectionOp::Suspend) {
+                InjectionDecision::Allowed(_) => None,
+                InjectionDecision::Denied(d) => Some(d),
+            })
+        } else {
+            None
+        };
+
         {
             let mut st = state.lock_safe();
             if !st.active || st.runoverlay_started {
@@ -301,6 +332,14 @@ fn watcher_loop(state: Arc<Mutex<MonitorState>>) {
             }
             match (game_pid, st.suspended.is_some()) {
                 (Some(pid), false) => {
+                    // Safety policy says no: never freeze the game. Stop the
+                    // watcher entirely — the overlay build will be refused by
+                    // its own gate, so there is nothing left to time.
+                    if let Some(d) = suspend_denial {
+                        log_error!("[SAFETY] Game suspend blocked ({}) - {}; monitor stopping", d.code(), d.message());
+                        st.active = false;
+                        break;
+                    }
                     // Found it and we haven't suspended anything yet.
                     if st.game_first_seen.is_none() {
                         st.game_first_seen = Some(Instant::now());

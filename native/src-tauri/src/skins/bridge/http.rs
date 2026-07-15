@@ -68,7 +68,7 @@ pub async fn route(ctx: &BridgeContext, path: &str, origin: Option<&str>) -> Res
 /// the Chud app holds LCU auth so this always resolves.
 async fn handle_phase(origin: Option<&str>) -> Response {
     let phase = if let Some(auth) = crate::lcu::cached_auth() {
-        let client = crate::lcu::build_client(3.0);
+        let client = crate::lcu::build_lcu_client(3.0);
         crate::lcu::get_phase(&client, &auth).await
     } else {
         None

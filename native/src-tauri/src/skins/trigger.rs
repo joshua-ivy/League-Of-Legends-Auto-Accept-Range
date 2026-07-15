@@ -27,13 +27,13 @@
 #![allow(dead_code)] // consumed by ticker.rs; S9 troubleshooting UI
 
 use std::path::Path;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::lcu::{self, Auth};
+use crate::safety_manager::{self, InjectionDecision, InjectionDenial, InjectionOp};
 use crate::skins::bridge::BridgeHandle;
 use crate::skins::features::historic::{self, HistoricEntry};
 use crate::skins::features::special;
@@ -57,8 +57,13 @@ const LOG_SEPARATOR_WIDTH: usize = 80;
 /// `ticker::resolve_injection_name`.
 pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id: u64, name: String, champion_name: String) {
     let app_state = app.state::<Arc<AppState>>().inner().clone();
-    if app_state.injection_blocked.load(Ordering::SeqCst) {
-        log_warn!("[INJECT] Injection blocked (ranked kill-switch) - skipping trigger for {name}");
+    // P0-A safety gate at the pipeline entry. This replaces the old
+    // `injection_blocked` atomic check (ranked-only, and only maintained
+    // while Auto-Range happened to be running) with the full policy:
+    // master switch, versioned consent, LCU reachability, phase, and
+    // ranked/unknown queue — all evaluated from the always-on monitor.
+    if policy_denied(&app, InjectionOp::Build).is_some() {
+        log_warn!("[INJECT] Injection blocked by safety policy - skipping trigger for {name}");
         return;
     }
 
@@ -205,7 +210,7 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
         injection.resume_if_suspended();
         return;
     };
-    let client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
+    let client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
 
     // Stage party-member skins now (cleans the mods dir first so they survive)
     // and fold them into the overlay for both the owned and unowned paths.
@@ -216,6 +221,13 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     let base_owned = owned_skin_ids.contains(&effective_skin_id)
         || (ui_skin_id.is_some_and(|id| owned_skin_ids.contains(&id)) && Some(effective_skin_id) != ui_skin_id);
     if base_owned {
+        // P0-A: re-check immediately before the LCU PATCH (phase/queue can
+        // have changed since the entry gate). Denied -> abort the whole
+        // trigger; the overlay build would be denied by its own gate anyway.
+        if policy_denied(&app, InjectionOp::LcuPatch).is_some() {
+            injection.resume_if_suspended();
+            return;
+        }
         force_owned_skin(&client, &auth, local_cell_id, effective_skin_id, champ_id, random_mode_active, &injection).await;
         spawn_owned_injection(app.clone(), skins.clone(), injection.clone(), name.clone(), champion_name.clone(), champ_id, party_folders);
         return;
@@ -548,7 +560,13 @@ async fn run_custom_mod_injection(
     let target_is_base_custom_skin = has_custom_skin_folder && custom_mod.skin_id % 1000 == 0;
     if base_skin_name.is_some() || target_is_base_custom_skin {
         if let (Some(cid), Some(auth)) = (champion_id, lcu::cached_auth()) {
-            let client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
+            // P0-A: gate the LCU PATCH; denied -> abort this injection
+            // entirely (never patch, never build).
+            if policy_denied(app, InjectionOp::LcuPatch).is_some() {
+                injection.resume_if_suspended();
+                return;
+            }
+            let client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
             let (local_cell, random_active) = {
                 let shared = skins.shared.lock_safe();
                 (shared.local_cell_id, shared.random_mode_active)
@@ -645,6 +663,12 @@ async fn inject_unowned_skin(
         let base_skin_id = cid * 1000;
         let actual = verify_skin_applied(&client, &auth, local_cell_id, base_skin_id).await;
         if actual != Some(base_skin_id) {
+            // P0-A: gate the LCU PATCH; denied -> abort this injection
+            // entirely (never patch, never build).
+            if policy_denied(&app, InjectionOp::LcuPatch).is_some() {
+                injection.resume_if_suspended();
+                return;
+            }
             force_base_skin(&client, &auth, local_cell_id, base_skin_id, random_mode_active, bridge.as_ref()).await;
         }
     }
@@ -690,6 +714,24 @@ async fn inject_unowned_skin(
 
 fn parse_injected_id(name: &str) -> Option<i64> {
     name.split_once('_').and_then(|(_, id)| id.parse::<i64>().ok())
+}
+
+/// P0-A: evaluate the safety policy for `op`. On denial: log it, push the
+/// typed code to the UI (`injection-denied` event — the Skins page shows the
+/// backend reason verbatim), and return it so the caller aborts.
+fn policy_denied(app: &AppHandle, op: InjectionOp) -> Option<InjectionDenial> {
+    let app_state = app.state::<Arc<AppState>>();
+    match safety_manager::evaluate_injection_policy(&app_state, op) {
+        InjectionDecision::Allowed(_) => None,
+        InjectionDecision::Denied(d) => {
+            log_warn!("[SAFETY] {} denied ({}) - {}", op.as_str(), d.code(), d.message());
+            let _ = app.emit(
+                "injection-denied",
+                serde_json::json!({ "op": op.as_str(), "code": d.code(), "message": d.message() }),
+            );
+            Some(d)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------

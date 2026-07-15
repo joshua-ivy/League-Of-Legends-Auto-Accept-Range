@@ -73,7 +73,7 @@ async fn stream_events(app: &AppHandle, state: &Arc<AppState>, auth: &lcu::Auth,
     }
 
     let timeout = state.config.lock_safe().lcu.request_timeout;
-    let client = lcu::build_client(timeout);
+    let client = lcu::build_lcu_client(timeout);
 
     while state.running.load(Ordering::SeqCst) && state.auto_accept_gen.load(Ordering::SeqCst) == generation {
         // Bounded wait so a "stop" toggle is honored within ~1s even when the

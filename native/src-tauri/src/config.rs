@@ -42,13 +42,21 @@ impl Default for Lcu {
 #[serde(default)]
 pub struct Safety {
     pub block_in_ranked: bool,
+    /// Dashboard (Auto-Range / input-injection) ban-risk acknowledgement.
     pub injection_ack: bool,
+    /// Versioned SKIN-injection risk acknowledgement (P0-A). `0` = never
+    /// acknowledged / revoked; injection is allowed only while this is >=
+    /// `safety_manager::CURRENT_SKINS_ACK_VERSION`, so bumping that constant
+    /// re-gates everyone behind the updated disclosure. Backend-persisted —
+    /// replaces the old frontend-only localStorage ack, which never actually
+    /// gated anything.
+    pub skins_ack_version: u32,
     pub check_interval: f64,
 }
 
 impl Default for Safety {
     fn default() -> Self {
-        Self { block_in_ranked: true, injection_ack: false, check_interval: 2.5 }
+        Self { block_in_ranked: true, injection_ack: false, skins_ack_version: 0, check_interval: 2.5 }
     }
 }
 
@@ -250,6 +258,25 @@ impl Default for Library {
     }
 }
 
+/// Extra hosts allowed for OUTBOUND external (non-LCU) requests, on top of
+/// `net::allowed_origins`'s built-ins (Chud's own Workers + GitHub) and the
+/// hosts already implied by `runes.endpoint`/`library.endpoint`/
+/// `skins.party_relay_url`. Empty by default — this exists for an operator
+/// who points one of those endpoints somewhere `net` can't infer (e.g. a
+/// self-hosted mirror reachable only via a different domain than the
+/// configured endpoint).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Network {
+    pub extra_allowed_origins: Vec<String>,
+}
+
+impl Default for Network {
+    fn default() -> Self {
+        Self { extra_allowed_origins: Vec::new() }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -262,6 +289,7 @@ pub struct Config {
     pub client: ClientCustomization,
     pub presence: Presence,
     pub library: Library,
+    pub network: Network,
 }
 
 /// Per-user config file path: `%APPDATA%/LeagueOfLegendsTools/config.json`.

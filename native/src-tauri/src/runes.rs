@@ -76,8 +76,15 @@ impl RuneBuild {
 /// Fetch the current-patch best build for `champion_id` in `role` from the
 /// Worker. `role` is one of top/jungle/mid/bot/support (empty = let the Worker
 /// pick the champ's most-played role). Returns `None` on any failure.
+///
+/// `http` MUST be an external client (`net::build_external_client`), NOT the
+/// LCU client the rest of this module's functions take — this is the one
+/// call in the auto-import flow that leaves the machine (P0-B: it used to
+/// wrongly share the LCU's `danger_accept_invalid_certs` client with real
+/// internet requests). `allowed` gates the endpoint host.
 pub async fn fetch_build(
     http: &reqwest::Client,
+    allowed: &std::collections::HashSet<String>,
     runes_endpoint: &str,
     champion_id: i64,
     role: &str,
@@ -96,11 +103,8 @@ pub async fn fetch_build(
         urlencode(mode),
         urlencode(sort),
     );
-    let resp = http.get(&url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    let build: RuneBuild = resp.json().await.ok()?;
+    let value = crate::net::get_json_checked(http, &url, allowed, 16 * 1024 * 1024).await.ok()?;
+    let build: RuneBuild = serde_json::from_value(value).ok()?;
     build.is_sane().then_some(build)
 }
 
@@ -241,11 +245,23 @@ fn normalize_role(pos: &str) -> String {
 /// End-to-end: detect the locked champion + role, fetch the current-patch best
 /// build from the Worker, and apply it. Returns what was applied (all-false if
 /// not in champ select, no champ picked, or the Worker had no build).
-pub async fn import_now(http: &reqwest::Client, auth: &Auth, endpoint: &str, sort: &str) -> Applied {
+///
+/// Takes TWO clients, deliberately: `lcu_http` (`lcu::build_lcu_client`) for
+/// the champ-select read + apply-to-client writes, and `ext_http`
+/// (`net::build_external_client`) for the one request that leaves the
+/// machine (the Worker fetch) — see `fetch_build`'s doc comment.
+pub async fn import_now(
+    lcu_http: &reqwest::Client,
+    auth: &Auth,
+    ext_http: &reqwest::Client,
+    allowed: &std::collections::HashSet<String>,
+    endpoint: &str,
+    sort: &str,
+) -> Applied {
     let none = Applied { runes: false, spells: false, items: false };
-    let Some((champ, role, mode)) = locked_champ_and_role(http, auth).await else { return none };
-    let Some(build) = fetch_build(http, endpoint, champ, &role, &mode, sort).await else { return none };
-    apply_build(http, auth, &build).await
+    let Some((champ, role, mode)) = locked_champ_and_role(lcu_http, auth).await else { return none };
+    let Some(build) = fetch_build(ext_http, allowed, endpoint, champ, &role, &mode, sort).await else { return none };
+    apply_build(lcu_http, auth, &build).await
 }
 
 fn page_name(p: &Value) -> &str {

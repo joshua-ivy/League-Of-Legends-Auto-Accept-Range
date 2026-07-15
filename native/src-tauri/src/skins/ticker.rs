@@ -98,7 +98,7 @@ impl TimerManager {
         // (WS_PROBE_ITERATIONS x WS_PROBE_SLEEP_MS ~= 480ms window).
         if left_ms <= 0 {
             if let Some(auth) = lcu::cached_auth() {
-                let client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
+                let client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
                 for _ in 0..WS_PROBE_ITERATIONS {
                     let Some(probe) = lcu_ext::shared_cache()
                         .get(&client, &auth, "/lol-champ-select/v1/session", DEFAULT_CACHE_TTL)
@@ -180,7 +180,7 @@ async fn run_ticker(app: AppHandle, skins: Arc<SkinsState>, ticker_id: u64, gene
     let mut last_poll: Option<TokioInstant> = None;
     let mut last_bucket: Option<i64> = None;
 
-    let client = lcu::build_client(lcu_ext::LCU_API_TIMEOUT_S);
+    let client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
 
     loop {
         if skins.ticker_gen.load(Ordering::SeqCst) != generation {
