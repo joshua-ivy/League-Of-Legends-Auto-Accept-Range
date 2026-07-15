@@ -90,7 +90,7 @@ Chud's ranked kill-switch runs **always** — a background monitor that refuses 
 
 ---
 
-## ⚠️ Please read — this can get you banned
+## ⚠️ Please read
 
 Chud changes skins by **injecting into the game**, and Auto-Range **synthesizes keyboard input**. **Riot's Vanguard anti-cheat can detect this and ban your account** — a real risk with any skin changer or input tool for League.
 
