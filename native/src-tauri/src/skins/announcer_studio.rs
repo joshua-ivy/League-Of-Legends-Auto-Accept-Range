@@ -71,7 +71,6 @@ pub const SLOTS: &[Slot] = &[
 const SHARED: &str = "assets/sounds/wwise2016/vo/en_us/shared/";
 const AUDIO_WPK: &str = "announcer_global_female1_vo_audio.wpk";
 const EVENTS_BNK: &str = "announcer_global_female1_vo_events.bnk";
-const VORBIS: u32 = 0x0004_0001;
 const PCM: u32 = 0x0001_0001;
 
 fn studio_res_dir() -> PathBuf {

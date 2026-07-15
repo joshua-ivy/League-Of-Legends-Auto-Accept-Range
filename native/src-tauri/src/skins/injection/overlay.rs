@@ -42,9 +42,6 @@ pub const ENABLE_RUNOVERLAY_PRIORITY_BOOST: bool = false;
 /// suspended game; a build holding a suspended game hostage is bounded much
 /// tighter by the auto-resume abort below.
 const MKOVERLAY_TIMEOUT: Duration = Duration::from_secs(120);
-/// `PROCESS_MONITOR_SLEEP_S` — poll interval while babysitting the running
-/// `runoverlay` child.
-const PROCESS_MONITOR_SLEEP: Duration = Duration::from_millis(500);
 /// mkoverlay wait-loop poll interval; the overlay-size check below runs
 /// every `SIZE_CHECK_EVERY` of these.
 const MKOVERLAY_POLL: Duration = Duration::from_millis(50);
@@ -392,14 +389,6 @@ fn dir_size(dir: &Path) -> u64 {
         }
     }
     total
-}
-
-/// Delete overlay WAD files after runoverlay finishes, recreating the empty
-/// directory (ported from `OverlayManager._wipe_overlay_dir`).
-fn wipe_dir(dir: &Path) {
-    let _ = std::fs::remove_dir_all(dir);
-    let _ = std::fs::create_dir_all(dir);
-    log_info!("[INJECT] Wiped overlay directory after game ended");
 }
 
 /// Boost `pid`'s priority class to `HIGH_PRIORITY_CLASS`. Best-effort —

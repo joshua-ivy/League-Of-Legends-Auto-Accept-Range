@@ -65,13 +65,6 @@ fn now_unix_secs() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
-/// Mark a champion as explicitly browsed by the user since the last
-/// extraction (ported from `SwiftplayHandler.mark_champion_changed`) — S6/S9
-/// wire this from the bridge's skin-hover handler; exposed here as the seam.
-pub fn mark_champion_changed(champion_id: i64) {
-    runtime().lock_safe().user_changed_since_inject.insert(champion_id);
-}
-
 // ---------------------------------------------------------------------
 // Lobby detection — ported from `LobbyProcessor.monitor_lobby_state` +
 // `SwiftplayHandler.handle_swiftplay_lobby`/`_process_swiftplay_champion_selection`.

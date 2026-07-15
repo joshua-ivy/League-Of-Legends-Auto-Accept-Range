@@ -133,12 +133,7 @@ mod tests {
 
     fn cache_with_skin(champion_id: i64, skin_id: i64, name: &str) -> ChampionSkinCache {
         let mut cache = ChampionSkinCache { champion_id: Some(champion_id), ..Default::default() };
-        let skin = crate::skins::lcu_ext::SkinInfo {
-            skin_id,
-            champion_id,
-            skin_name: name.to_string(),
-            ..Default::default()
-        };
+        let skin = crate::skins::lcu_ext::SkinInfo { skin_id, skin_name: name.to_string(), ..Default::default() };
         cache.skin_id_map.insert(skin_id, skin.clone());
         cache.skins.push(skin);
         cache

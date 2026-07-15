@@ -39,8 +39,6 @@ pub const SWIFTPLAY_QUEUE_ID: i64 = 480;
 pub const SWIFTPLAY_MODES: [&str; 2] = ["SWIFTPLAY", "BRAWL"];
 /// `config.py::LCU_API_TIMEOUT_S`.
 pub const LCU_API_TIMEOUT_S: f64 = 2.0;
-/// `config.py::LCU_SKIN_SCRAPER_TIMEOUT_S`.
-pub const LCU_SKIN_SCRAPER_TIMEOUT_S: f64 = 3.0;
 
 fn is_swiftplay_mode_str(game_mode: &str) -> bool {
     let upper = game_mode.to_uppercase();
@@ -276,12 +274,6 @@ pub struct SessionData {
     pub queue_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct RegionLocale {
-    pub region: Option<String>,
-    pub locale: Option<String>,
-}
-
 // ---------------------------------------------------------------------
 // Cell / lock pure functions — `lcu/data/utils.py`. Kept free of any LCU
 // I/O so they're unit-testable against a hand-built session fixture.
@@ -353,20 +345,13 @@ pub fn compute_locked(session: &SessionData) -> HashMap<i64, i64> {
 pub struct ChromaInfo {
     pub id: i64,
     pub name: String,
-    pub colors: Vec<String>,
-    pub chroma_path: String,
-    pub skin_id: i64,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SkinInfo {
     pub skin_id: i64,
-    pub champion_id: i64,
     pub skin_name: String,
-    pub is_base: bool,
-    pub chromas: usize,
     pub chroma_details: Vec<ChromaInfo>,
-    pub num: i64,
 }
 
 /// Cache for one champion's skins, scraped from the LCU (`ChampionSkinCache`
@@ -384,10 +369,6 @@ pub struct ChampionSkinCache {
 }
 
 impl ChampionSkinCache {
-    pub fn clear(&mut self) {
-        *self = Self::default();
-    }
-
     pub fn is_loaded_for_champion(&self, champion_id: i64) -> bool {
         self.champion_id == Some(champion_id) && !self.skins.is_empty()
     }
@@ -459,26 +440,12 @@ pub fn build_skin_cache(champ: ChampionData, champion_id: i64) -> ChampionSkinCa
         let mut chroma_details = Vec::with_capacity(raw_chromas.len());
         for chroma in &raw_chromas {
             let Some(chroma_id) = chroma.id else { continue };
-            let info = ChromaInfo {
-                id: chroma_id,
-                name: chroma.name.clone().unwrap_or_default(),
-                colors: chroma.colors.clone().unwrap_or_default(),
-                chroma_path: chroma.chroma_path.clone().unwrap_or_default(),
-                skin_id,
-            };
+            let info = ChromaInfo { id: chroma_id, name: chroma.name.clone().unwrap_or_default() };
             cache.chroma_id_map.insert(chroma_id, info.clone());
             chroma_details.push(info);
         }
 
-        let info = SkinInfo {
-            skin_id,
-            champion_id,
-            skin_name: skin_name.clone(),
-            is_base: skin.is_base.unwrap_or(false),
-            chromas: raw_chromas.len(),
-            chroma_details,
-            num: skin.num.unwrap_or(0),
-        };
+        let info = SkinInfo { skin_id, skin_name: skin_name.clone(), chroma_details };
         cache.skin_id_map.insert(skin_id, info.clone());
         cache.skin_name_map.insert(skin_name, info.clone());
         cache.skins.push(info);
@@ -571,28 +538,6 @@ pub async fn champ_select_session(client: &reqwest::Client, auth: &Auth) -> Opti
     serde_json::from_value(value).ok()
 }
 
-pub async fn hovered_champion_id(client: &reqwest::Client, auth: &Auth) -> Option<i64> {
-    let value = shared_cache()
-        .get(client, auth, "/lol-champ-select/v1/hovered-champion-id", DEFAULT_CACHE_TTL)
-        .await?;
-    value.as_i64().or_else(|| value.as_str().and_then(|s| s.parse().ok()))
-}
-
-/// `/session/my-selection`, falling back to the legacy `/selection` endpoint.
-pub async fn my_selection(client: &reqwest::Client, auth: &Auth) -> Option<Value> {
-    if let Some(v) = shared_cache()
-        .get(client, auth, "/lol-champ-select/v1/session/my-selection", DEFAULT_CACHE_TTL)
-        .await
-    {
-        return Some(v);
-    }
-    shared_cache().get(client, auth, "/lol-champ-select/v1/selection", DEFAULT_CACHE_TTL).await
-}
-
-pub async fn owned_champions_minimal(client: &reqwest::Client, auth: &Auth) -> Option<Value> {
-    shared_cache().get(client, auth, "/lol-champions/v1/owned-champions-minimal", DEFAULT_CACHE_TTL).await
-}
-
 /// All owned skin IDs from the inventory (expensive — call explicitly, not
 /// on a poll tick; matches the Python docstring's warning).
 pub async fn owned_skin_ids(client: &reqwest::Client, auth: &Auth) -> Option<HashSet<i64>> {
@@ -611,32 +556,6 @@ pub async fn owned_skin_ids(client: &reqwest::Client, auth: &Auth) -> Option<Has
 
 pub async fn current_summoner(client: &reqwest::Client, auth: &Auth) -> Option<Value> {
     shared_cache().get(client, auth, "/lol-summoner/v1/current-summoner", DEFAULT_CACHE_TTL).await
-}
-
-pub async fn region_locale(client: &reqwest::Client, auth: &Auth) -> Option<RegionLocale> {
-    let value = shared_cache().get(client, auth, "/riotclient/region-locale", DEFAULT_CACHE_TTL).await?;
-    serde_json::from_value(value).ok()
-}
-
-pub async fn client_language(client: &reqwest::Client, auth: &Auth) -> Option<String> {
-    region_locale(client, auth).await.and_then(|r| r.locale)
-}
-
-/// Champion name by ID: game-data endpoint first, scouting-inventory
-/// fallback — mirrors `LCUProperties.get_champion_name_by_id`.
-pub async fn champion_name_by_id(client: &reqwest::Client, auth: &Auth, champion_id: i64) -> Option<String> {
-    let endpoints = [
-        format!("/lol-game-data/assets/v1/champions/{champion_id}.json"),
-        format!("/lol-champions/v1/inventories/scouting/champions/{champion_id}"),
-    ];
-    for endpoint in &endpoints {
-        if let Some(value) = shared_cache().get(client, auth, endpoint, DEFAULT_CACHE_TTL).await {
-            if let Some(name) = value.get("name").and_then(Value::as_str) {
-                return Some(name.to_string());
-            }
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------
@@ -756,8 +675,6 @@ pub struct ChampionSelection {
 #[derive(Debug, Clone, Default)]
 pub struct DualChampionSelection {
     pub champions: Vec<ChampionSelection>,
-    pub champion_1: Option<ChampionSelection>,
-    pub champion_2: Option<ChampionSelection>,
 }
 
 fn value_i64(v: &Value, key: &str) -> i64 {
@@ -768,39 +685,12 @@ fn value_str(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
-fn is_swiftplay_lobby_data(data: &Value, already_swiftplay: bool) -> bool {
-    if let Some(gm) = data.get("gameMode").and_then(Value::as_str) {
-        if is_swiftplay_mode_str(gm) {
-            return true;
-        }
-    }
-    if data.get("queueId").and_then(Value::as_i64) == Some(SWIFTPLAY_QUEUE_ID) {
-        return true;
-    }
-    already_swiftplay
-}
-
 /// The current lobby's `partyId` (a GUID shared by every member), or `None`
 /// when not in a lobby. Anchor for auto-party: all Chud users in the same
 /// lobby derive the same relay room from it, converging with no token exchange.
 pub async fn get_lobby_party_id(client: &reqwest::Client, auth: &Auth) -> Option<String> {
     let lobby = shared_cache().get(client, auth, "/lol-lobby/v2/lobby", DEFAULT_CACHE_TTL).await?;
     lobby.get("partyId").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
-}
-
-/// Try each lobby-ish endpoint until one looks like Swiftplay lobby data.
-/// `already_swiftplay` mirrors the Python `self.game_mode.is_swiftplay`
-/// short-circuit (any lobby data is treated as Swiftplay once already
-/// detected).
-pub async fn get_swiftplay_lobby_data(client: &reqwest::Client, auth: &Auth, already_swiftplay: bool) -> Option<Value> {
-    for endpoint in SWIFTPLAY_LOBBY_ENDPOINTS {
-        if let Some(data) = shared_cache().get(client, auth, endpoint, DEFAULT_CACHE_TTL).await {
-            if is_swiftplay_lobby_data(&data, already_swiftplay) {
-                return Some(data);
-            }
-        }
-    }
-    None
 }
 
 fn build_selection(mut champ_id: i64, skin_id: i64, slot: &Value) -> Option<ChampionSelection> {
@@ -929,9 +819,7 @@ fn extract_dual_champion_selection(data: &Value) -> Option<DualChampionSelection
     if champions.is_empty() {
         return None;
     }
-    let champion_1 = champions.first().cloned();
-    let champion_2 = champions.get(1).cloned();
-    Some(DualChampionSelection { champions, champion_1, champion_2 })
+    Some(DualChampionSelection { champions })
 }
 
 /// Both (primary + secondary) champion selections from Swiftplay lobby data.
@@ -1091,7 +979,7 @@ mod tests {
     #[test]
     fn find_skin_by_text_exact_and_locale_suffix() {
         let mut cache = ChampionSkinCache { champion_id: Some(1), ..Default::default() };
-        let skin = SkinInfo { skin_id: 1000, champion_id: 1, skin_name: "Prestige Skin".to_string(), ..Default::default() };
+        let skin = SkinInfo { skin_id: 1000, skin_name: "Prestige Skin".to_string(), ..Default::default() };
         cache.skin_id_map.insert(1000, skin.clone());
         cache.skin_name_map.insert("Prestige Skin".to_string(), skin.clone());
         cache.skins.push(skin);

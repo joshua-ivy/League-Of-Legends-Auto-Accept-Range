@@ -29,7 +29,6 @@ pub struct ToolPaths {
     pub modtools: PathBuf,
     pub wad_extract: PathBuf,
     pub wad_make: PathBuf,
-    pub cslol_dll: PathBuf,
 }
 
 /// Why `verify_cslol_dll` refused the DLL — mirrors the two Python failure
@@ -150,7 +149,6 @@ pub fn detect_tools(tools_dir: &Path) -> ToolPaths {
         modtools: tools_dir.join("mod-tools.exe"),
         wad_extract: tools_dir.join("wad-extract.exe"),
         wad_make: tools_dir.join("wad-make.exe"),
-        cslol_dll: tools_dir.join("cslol-dll.dll"),
     };
 
     for (name, exe) in

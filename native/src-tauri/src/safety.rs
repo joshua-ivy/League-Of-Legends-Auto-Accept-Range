@@ -18,27 +18,6 @@ pub fn queue_is_ranked(session: &serde_json::Value) -> Option<bool> {
     None
 }
 
-/// Gameflow phases where a match is actually live (champ pick onward) — only
-/// then does the ranked kill-switch apply; outside a game there's nothing to protect.
-fn game_is_live(session: &serde_json::Value) -> bool {
-    matches!(
-        session.get("phase").and_then(|v| v.as_str()),
-        Some("ChampSelect") | Some("GameStart") | Some("InProgress") | Some("Reconnect")
-    )
-}
-
-/// Whether injection tools should block right now. Fails safe: if live but ranked
-/// state is unknown, block. Never blocks outside a live game.
-pub fn should_block(session: &serde_json::Value) -> bool {
-    if !game_is_live(session) {
-        return false;
-    }
-    match queue_is_ranked(session) {
-        Some(is_ranked) => is_ranked,
-        None => true, // live game, unknown queue -> fail safe
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

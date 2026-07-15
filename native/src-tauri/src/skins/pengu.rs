@@ -18,9 +18,6 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use sysinfo::{ProcessesToUpdate, System};
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::ERROR_SUCCESS;
-use windows::Win32::System::Registry::{RegCloseKey, RegDeleteKeyW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ};
 
 use crate::skins::injection::tools;
 use crate::skins::paths;
@@ -36,10 +33,6 @@ const LEAGUE_PROCESSES: [&str; 4] =
     ["LeagueClient.exe", "LeagueClientUx.exe", "LeagueClientUxRender.exe", "League of Legends.exe"];
 const PENGU_UI_PROCESS: &str = "Pengu Loader.exe";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-/// IFEO registry key old Pengu Loader versions used to inject into League
-/// (ported from `_IFEO_KEY`).
-const IFEO_KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LeagueClientUx.exe";
 
 /// Resolved once per process — every call after the first reuses the
 /// already-synced runtime directory instead of re-copying the whole payload.
@@ -66,11 +59,6 @@ fn is_available(dir: &Path) -> bool {
 
 fn active_flag_path() -> PathBuf {
     paths::state_dir().join("pengu_active.flag")
-}
-
-fn to_wide(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -302,38 +290,9 @@ fn write_active_flag() {
     }
 }
 
-fn clear_active_flag() {
-    let _ = std::fs::remove_file(active_flag_path());
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-
-/// Clean up the old Pengu Loader IFEO (Image File Execution Options)
-/// registry entry — older Pengu Loader versions used IFEO to inject into
-/// League, which can crash newer client versions. Returns `true` if an
-/// entry was found and deleted.
-pub fn cleanup_old_pengu_ifeo() -> bool {
-    let subkey = to_wide(IFEO_KEY);
-    unsafe {
-        let mut existing = HKEY::default();
-        let open_status = RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(subkey.as_ptr()), 0, KEY_READ, &mut existing);
-        if open_status != ERROR_SUCCESS {
-            return false; // key doesn't exist (or inaccessible) — nothing to clean up
-        }
-        let _ = RegCloseKey(existing);
-
-        let delete_status = RegDeleteKeyW(HKEY_LOCAL_MACHINE, PCWSTR(subkey.as_ptr()));
-        if delete_status == ERROR_SUCCESS {
-            log_info!("[PENGU] Cleaned up old Pengu Loader IFEO registry entry");
-            true
-        } else {
-            log_info!("[PENGU] No permission to clean up IFEO registry entry (requires admin)");
-            false
-        }
-    }
-}
 
 /// Set the League path in Pengu Loader configuration (ported from
 /// `set_league_path`).
@@ -404,45 +363,8 @@ pub fn activate_on_start(league_path: Option<&str>) -> ActivateResult {
     ActivateResult { activated, restart_needed, restarted }
 }
 
-/// Force-deactivate Pengu Loader when Chud shuts down (ported from
-/// `deactivate_on_exit`).
-pub fn deactivate_on_exit() -> bool {
-    let dir = pengu_dir();
-    if !is_available(dir) {
-        return false;
-    }
-
-    let restart_needed = is_league_running();
-    log_info!("[PENGU] Deactivating Pengu Loader (restart League client: {restart_needed}).");
-
-    let deactivated = run_cli(dir, &["--force-deactivate", "--silent"], &[0]);
-    if deactivated {
-        clear_active_flag();
-        if restart_needed {
-            run_cli(dir, &["--restart-client", "--silent"], &[0]);
-        }
-    }
-    deactivated
-}
-
-/// Check for a leftover active flag from a previous unclean shutdown and
-/// deactivate Pengu Loader if found (ported from `cleanup_if_dirty`).
-pub fn cleanup_if_dirty() -> bool {
-    if !active_flag_path().exists() {
-        return false;
-    }
-
-    log_info!("[PENGU] Detected leftover Pengu active flag — cleaning up from previous session.");
-    let deactivated = deactivate_on_exit();
-    // Flag is already cleared inside deactivate_on_exit() on success; clear
-    // explicitly too in case deactivation itself failed, so we don't retry
-    // forever on every launch.
-    clear_active_flag();
-    deactivated
-}
-
 /// Whether Pengu Loader is currently marked active — the flag file
-/// `activate_on_start` writes and `deactivate_on_exit` clears still exists.
+/// `activate_on_start` writes still exists.
 pub fn is_active() -> bool {
     active_flag_path().exists()
 }

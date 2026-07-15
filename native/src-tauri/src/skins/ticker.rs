@@ -42,8 +42,6 @@ pub const TIMER_HZ_MAX: u32 = 2000;
 /// `config.TIMER_POLL_PERIOD_S` (0.2s) — cadence for the ticker's periodic
 /// LCU resync.
 pub const TIMER_POLL_PERIOD: Duration = Duration::from_millis(200);
-/// `config.FALLBACK_LOADOUT_MS_DEFAULT`.
-pub const FALLBACK_LOADOUT_MS_DEFAULT: i64 = 0;
 /// `config.SKIN_THRESHOLD_MS_DEFAULT` — the ticker's own fallback if
 /// `SkinsShared.skin_write_ms` is unset/zero (Python: `getattr(state,
 /// 'skin_write_ms', SKIN_THRESHOLD_MS_DEFAULT) or SKIN_THRESHOLD_MS_DEFAULT`).
@@ -467,10 +465,10 @@ mod tests {
 
     fn cache_with_chroma(champion_id: i64, base_skin_id: i64, chroma_id: i64) -> ChampionSkinCache {
         let mut cache = ChampionSkinCache { champion_id: Some(champion_id), champion_name: Some("Ahri".into()), ..Default::default() };
-        let base = SkinInfo { skin_id: base_skin_id, champion_id, skin_name: "Base".to_string(), ..Default::default() };
+        let base = SkinInfo { skin_id: base_skin_id, skin_name: "Base".to_string(), ..Default::default() };
         cache.skin_id_map.insert(base_skin_id, base.clone());
         cache.skins.push(base);
-        cache.chroma_id_map.insert(chroma_id, ChromaInfo { id: chroma_id, skin_id: base_skin_id, ..Default::default() });
+        cache.chroma_id_map.insert(chroma_id, ChromaInfo { id: chroma_id, ..Default::default() });
         cache
     }
 
@@ -544,7 +542,7 @@ mod tests {
     fn build_skin_label_strips_champion_prefix_and_avoids_double_append() {
         let cache = {
             let mut c = ChampionSkinCache { champion_id: Some(103), champion_name: Some("Ahri".into()), ..Default::default() };
-            let skin = SkinInfo { skin_id: 103000, champion_id: 103, skin_name: "Ahri Base".to_string(), ..Default::default() };
+            let skin = SkinInfo { skin_id: 103000, skin_name: "Ahri Base".to_string(), ..Default::default() };
             c.skin_id_map.insert(103000, skin.clone());
             c.skins.push(skin);
             c

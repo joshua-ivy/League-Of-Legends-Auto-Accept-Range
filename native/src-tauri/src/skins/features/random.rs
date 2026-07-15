@@ -9,8 +9,7 @@
 
 use rand::seq::SliceRandom;
 
-use crate::lcu::Auth;
-use crate::skins::lcu_ext::{self, ChampionSkinCache};
+use crate::skins::lcu_ext::ChampionSkinCache;
 use crate::skins::state::SkinsShared;
 
 struct RandomOption {
@@ -82,35 +81,6 @@ pub fn cancel_randomization(shared: &mut SkinsShared) {
     shared.random_mode_active = false;
 }
 
-/// `RandomizationHandler.reset_on_skin_change`: cancel randomization if a
-/// skin change happened while it was active. Returns whether it was
-/// actually active (so the caller knows whether a broadcast is needed).
-pub fn reset_on_skin_change(shared: &mut SkinsShared) -> bool {
-    if shared.random_mode_active {
-        cancel_randomization(shared);
-        true
-    } else {
-        false
-    }
-}
-
-/// `RandomizationHandler.force_base_skin_and_randomize`: force the
-/// champion's base skin via `my-selection` (works even after champion
-/// lock), then roll a random skin. Returns `false` if the PATCH failed.
-pub async fn force_base_skin_and_randomize(
-    client: &reqwest::Client,
-    auth: &Auth,
-    shared: &mut SkinsShared,
-    cache: &ChampionSkinCache,
-) -> bool {
-    let Some(champion_id) = shared.locked_champ_id else { return false };
-    let base_skin_id = champion_id * 1000;
-    if !lcu_ext::set_my_selection_skin(client, auth, base_skin_id).await {
-        return false;
-    }
-    start_randomization(shared, cache)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,8 +88,8 @@ mod tests {
 
     fn cache_with_skins(champion_id: i64) -> ChampionSkinCache {
         let mut cache = ChampionSkinCache { champion_id: Some(champion_id), ..Default::default() };
-        let base = SkinInfo { skin_id: champion_id * 1000, champion_id, skin_name: "Base".to_string(), ..Default::default() };
-        let alt = SkinInfo { skin_id: champion_id * 1000 + 1, champion_id, skin_name: "Alt Skin".to_string(), ..Default::default() };
+        let base = SkinInfo { skin_id: champion_id * 1000, skin_name: "Base".to_string(), ..Default::default() };
+        let alt = SkinInfo { skin_id: champion_id * 1000 + 1, skin_name: "Alt Skin".to_string(), ..Default::default() };
         cache.skin_id_map.insert(base.skin_id, base.clone());
         cache.skin_id_map.insert(alt.skin_id, alt.clone());
         cache.skins.push(base);
@@ -141,12 +111,12 @@ mod tests {
         let mut cache = cache_with_skins(99);
         // A third skin so excluding the base AND the chroma-marked entry
         // still leaves something selectable.
-        let another = SkinInfo { skin_id: 99002, champion_id: 99, skin_name: "Another Skin".to_string(), ..Default::default() };
+        let another = SkinInfo { skin_id: 99002, skin_name: "Another Skin".to_string(), ..Default::default() };
         cache.skin_id_map.insert(another.skin_id, another.clone());
         cache.skins.push(another);
         // Register 99001 as a chroma of some other base — it must never be
         // picked at the top level even though it's in `cache.skins`.
-        cache.chroma_id_map.insert(99001, ChromaInfo { id: 99001, skin_id: 99050, ..Default::default() });
+        cache.chroma_id_map.insert(99001, ChromaInfo { id: 99001, ..Default::default() });
         for _ in 0..20 {
             let (_, id) = select_random_skin(&cache).expect("selection still possible via other skins");
             assert_ne!(id, 99001);
