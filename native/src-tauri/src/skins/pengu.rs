@@ -17,11 +17,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+use sha2::{Digest, Sha256};
 use sysinfo::{ProcessesToUpdate, System};
 
 use crate::skins::injection::tools;
 use crate::skins::paths;
-use crate::skins::slog::{log_info, log_warn};
+use crate::skins::slog::{log_error, log_info, log_warn};
 
 const PLUGIN_ENTRYPOINT: &str = "index.js";
 const PLUGIN_ENTRYPOINT_DISABLED: &str = "index.js_";
@@ -55,6 +56,39 @@ fn pengu_exe(dir: &Path) -> PathBuf {
 
 fn is_available(dir: &Path) -> bool {
     pengu_exe(dir).exists()
+}
+
+fn hash_file(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+/// H6: the runtime `Pengu Loader.exe` lives in a per-user-writable dir but is
+/// executed with the app's (often ELEVATED) token, so a standard-user attacker
+/// who overwrites it would get their binary run as admin. Before executing,
+/// verify it byte-matches the read-only BUNDLED copy (admin-writable, trusted);
+/// on mismatch, restore the trusted binary and re-verify. Comparing against the
+/// bundle (not a pinned hash) auto-adapts to a Pengu version shipped in an app
+/// update. Returns false only if the trusted binary can't be established.
+fn ensure_pengu_exe_trusted(runtime_dir: &Path) -> bool {
+    let runtime_exe = pengu_exe(runtime_dir);
+    let bundled_exe = pengu_exe(&tools::pengu_loader_resource_dir());
+    let Some(bundled_hash) = hash_file(&bundled_exe) else {
+        // No bundled reference (e.g. a dev build without packaged resources) —
+        // can't verify against nothing; fall back to existence rather than
+        // blocking a legitimate run.
+        return runtime_exe.exists();
+    };
+    if hash_file(&runtime_exe).as_deref() == Some(bundled_hash.as_str()) {
+        return true;
+    }
+    log_warn!("[PENGU] Runtime Pengu Loader.exe does not match the bundled copy — restoring the trusted binary before executing.");
+    if std::fs::copy(&bundled_exe, &runtime_exe).is_err() {
+        return false;
+    }
+    hash_file(&runtime_exe).as_deref() == Some(bundled_hash.as_str())
 }
 
 fn active_flag_path() -> PathBuf {
@@ -257,6 +291,10 @@ fn terminate_pengu_ui() {
 fn run_cli(dir: &Path, args: &[&str], ok_codes: &[i32]) -> bool {
     if !is_available(dir) {
         log_info!("[PENGU] Pengu Loader executable not found; skipping command {args:?}");
+        return false;
+    }
+    if !ensure_pengu_exe_trusted(dir) {
+        log_error!("[PENGU] Pengu Loader.exe failed integrity verification and could not be restored — refusing to execute {args:?}");
         return false;
     }
 

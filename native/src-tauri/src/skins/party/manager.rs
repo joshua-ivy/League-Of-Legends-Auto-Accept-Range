@@ -577,6 +577,13 @@ impl PartyManager {
                 if member.member_id == my_member_id || member.name.is_empty() || member.pubkey.is_empty() {
                     continue;
                 }
+                // Defense-in-depth against a hostile/compromised relay: the
+                // honest relay caps these server-side, but we must not store or
+                // re-broadcast an oversized name/pubkey. Legit values are <=64
+                // name chars and a 64-hex pubkey.
+                if member.name.chars().count() > 64 || member.pubkey.len() > 128 {
+                    continue;
+                }
                 current_ids.insert(member.member_id);
                 // Only a signature-verified update is allowed to mutate the
                 // peer's cached selection. When verified, an absent/unparseable
@@ -984,7 +991,12 @@ impl PartyManager {
             claimed.insert(champion_id);
 
             let chroma_id = skin.get("chroma_id").and_then(Value::as_i64);
-            let is_custom = skin.get("is_custom").and_then(Value::as_bool).unwrap_or(false);
+            // Derive is_custom from the SIGNED custom_mod_hash field, not the
+            // separate unsigned `is_custom` boolean — otherwise a hostile relay
+            // could strip `is_custom` (leaving the valid signature intact) and
+            // silently downgrade a peer's custom pick to a base skin. The hash
+            // is covered by the signature, so this can't be tampered.
+            let is_custom = skin.get("custom_mod_hash").and_then(Value::as_str).is_some_and(|h| !h.is_empty());
             // A peer's base skin (`champion_id * 1000`, no chroma, not a custom
             // mod) is their default — nothing to inject. Skip it silently
             // instead of hunting for a nonexistent ZIP and warning (the ARAM

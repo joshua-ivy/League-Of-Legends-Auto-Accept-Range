@@ -154,15 +154,38 @@ function modCard(t) {
 // Data comes from the Library's shared fetch; cards deep-link into the Library
 // Bundles tab where the install lives, so there's one install path.
 let dashBundles = null;
-const CIcon = (id) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${id}.png`;
+// Global broken-image handler. Replaces per-element inline `onerror="..."`
+// attributes (which a strict Tauri CSP blocks — Tauri hashes inline scripts, so
+// `unsafe-inline` is inert for event handlers). Capture phase because image
+// `error` events don't bubble. Each image opts in via `data-imgerr="<mode>"`.
+document.addEventListener(
+  "error",
+  (e) => {
+    const el = e.target;
+    if (!el || el.tagName !== "IMG") return;
+    const mode = el.getAttribute("data-imgerr");
+    if (!mode) return;
+    if (mode === "hide") el.style.display = "none";
+    else if (mode === "broken") el.classList.add("broken");
+    else if (mode === "vis") el.style.visibility = "hidden";
+    else if (mode === "fallback") {
+      el.style.display = "none";
+      const fb = el.parentElement && el.parentElement.querySelector(".fallback");
+      if (fb) fb.style.display = "flex";
+    }
+  },
+  true
+);
+
+const CIcon = (id) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${Number(id) || 0}.png`;
 function featuredPacksHtml() {
   if (dashBundles === null) return `<div class="dash-sec"><span class="section-label">Featured packs</span><span class="rule"></span></div><div class="packs"><div class="pack-loading">Loading champion packs…</div></div>`;
   if (!dashBundles.length) return "";
   const cards = dashBundles.slice(0, 4).map((b) => {
-    const collage = b.skins.slice(0, 4).map((sk) => `<div class="pack-cell" style="background-image:url('${sk.thumb || ""}')"></div>`).join("");
+    const collage = b.skins.slice(0, 4).map((sk) => `<div class="pack-cell" style="background-image:url('${esc(sk.thumb || "")}')"></div>`).join("");
     return `<button class="pack-card" data-openbundle="1">
       <div class="pack-collage">${collage}<span class="pack-n">${b.skins.length}</span></div>
-      <div class="pack-body"><div class="pack-name"><img class="pack-ci" src="${CIcon(b.champId)}" alt="" onerror="this.style.display='none'"><span>${esc(b.champ)}</span></div><div class="pack-sub">${b.skins.length} top skins</div></div>
+      <div class="pack-body"><div class="pack-name"><img class="pack-ci" src="${CIcon(b.champId)}" alt="" data-imgerr="hide"><span>${esc(b.champ)}</span></div><div class="pack-sub">${b.skins.length} top skins</div></div>
     </button>`;
   }).join("");
   return `<div class="dash-sec"><span class="section-label">Featured packs</span><span class="rule"></span><button class="btn sm" data-openbundle="1">Browse all →</button></div>
@@ -665,9 +688,11 @@ function favSkinNameFor(champId, skinId) {
   const s = c && c.skins.find((k) => k.skin_id === skinId);
   return s ? s.name : `Skin ${skinId}`;
 }
-// CommunityDragon art (CSP is null in this app, so remote images load fine).
+// CommunityDragon art (the app CSP allowlists raw./cdn.communitydragon.org for img-src).
 // Champ square icon = champ id; skin tile = champ id + skin number (skinId % 1000).
-const champIconUrl = (champId) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${champId}.png`;
+// champId is coerced to a number so a non-numeric catalog value can't break out
+// of the src attribute (skinTileUrl is already numeric via Math.floor/%).
+const champIconUrl = (champId) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${Number(champId) || 0}.png`;
 const skinTileUrl = (skinId) => `https://cdn.communitydragon.org/latest/champion/${Math.floor(skinId / 1000)}/tile/skin/${skinId % 1000}`;
 
 function skinsFavoritesCardInner() {
@@ -697,7 +722,7 @@ function skinsFavoritesCardInner() {
         const cls = `fav-skin${isFav ? " on" : ""}${s.downloaded ? "" : " undl"}`;
         const note = s.downloaded ? "" : `<span class="dim" style="font-size:10.5px;margin-left:auto">not downloaded</span>`;
         return `<div class="${cls}" data-fav-champ="${c.champ_id}" data-fav-skin="${s.skin_id}" data-dl="${s.downloaded ? 1 : 0}">
-          <img class="fav-thumb" loading="lazy" src="${skinTileUrl(s.skin_id)}" alt="" onerror="this.classList.add('broken')">
+          <img class="fav-thumb" loading="lazy" src="${skinTileUrl(s.skin_id)}" alt="" data-imgerr="broken">
           <span class="fav-dot">${isFav ? "●" : "○"}</span><span class="fav-sname">${esc(s.name)}</span>${note}</div>`;
       }).join("");
       sub = `<div class="fav-skinlist">${skinRows}</div>`;
@@ -705,7 +730,7 @@ function skinsFavoritesCardInner() {
     return `<div class="fav-champ">
       <div class="fav-champ-head" data-fav-toggle="${c.champ_id}">
         <span class="fav-caret">${caret}</span>
-        <img class="fav-cicon" loading="lazy" src="${champIconUrl(c.champ_id)}" alt="" onerror="this.classList.add('broken')">
+        <img class="fav-cicon" loading="lazy" src="${champIconUrl(c.champ_id)}" alt="" data-imgerr="broken">
         <span class="fav-cname">${esc(c.champ_name)}</span>
         <span class="fav-cbadge">${badge}</span>
         ${favId != null ? `<button class="btn sm ghost fav-clear" data-fav-clear="${c.champ_id}">Clear</button>` : ""}

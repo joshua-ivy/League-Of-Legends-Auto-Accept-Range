@@ -17,9 +17,12 @@ pub fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Decode a hex string into bytes; `None` on odd length or a non-hex digit.
+/// Decode a hex string into bytes; `None` on odd length, over-length, or a
+/// non-hex digit. The length bound (256 chars = 128 bytes, well above the
+/// 64-byte signature — the largest field we decode) means a hostile relay
+/// can't hand us a multi-megabyte "pubkey"/"sig" string to allocate for.
 pub fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if s.len() % 2 != 0 || s.len() > 256 {
         return None;
     }
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()

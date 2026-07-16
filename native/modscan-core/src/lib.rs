@@ -14,6 +14,7 @@ use std::io::Read;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use zip::result::ZipError;
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -43,6 +44,20 @@ pub const MAX_COMPRESSION_RATIO: u64 = 200;
 /// magic number. Bounded deliberately — we never want to decompress a whole
 /// entry just to classify it.
 pub const MAGIC_SNIFF_BYTES: usize = 16;
+
+/// Bounded window (past the offset-0 sniff) searched for an executable embedded
+/// BEHIND a benign header — the polyglot trick (valid image header, real PE
+/// appended). Capped so a hostile entry can't make us inflate unboundedly.
+pub const POLYGLOT_SCAN_BYTES: usize = 4096;
+
+/// Max depth we recurse into nested archives. A cosmetic mod never nests; this
+/// only bounds how far we chase a payload hidden in a zip-in-zip.
+const MAX_NEST_DEPTH: usize = 4;
+
+/// Max bytes inflated from a single nested-archive entry to recurse into it.
+/// Bounds the classic recursive zip-bomb: a bomb layer exceeding this is
+/// truncated (fails to parse) and flagged, never fully expanded.
+const NESTED_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Cap on how many `unexpected-content` findings we emit for one archive.
 /// A mod pack with a thousand stray files shouldn't turn into a thousand
@@ -170,29 +185,24 @@ impl ScanReport {
 /// panics: any per-entry failure (corrupt entry, decompression error) is
 /// downgraded to an `unreadable-entry` Info finding rather than propagated.
 pub fn scan_bytes(data: &[u8]) -> ScanReport {
+    scan_bytes_depth(data, 0)
+}
+
+/// `scan_bytes`, threaded with a nesting `depth` so the nested-archive
+/// recursion below can bound how far it chases a payload hidden in a
+/// zip-in-zip.
+fn scan_bytes_depth(data: &[u8], depth: usize) -> ScanReport {
     let sha256 = hex_sha256(data);
     let file_size = data.len() as u64;
 
     let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(data)) {
         Ok(archive) => archive,
         Err(_) => {
-            // A .fantome that isn't even a valid zip is off-contract, but
-            // that alone isn't evidence of malware — could just be a
-            // corrupt download. Flag it and move on; sha256 is still useful
-            // for correlating this report to the file.
-            return ScanReport {
-                verdict: Verdict::Suspicious,
-                sha256,
-                file_size,
-                entry_count: 0,
-                total_uncompressed: 0,
-                findings: vec![Finding::new(
-                    Severity::Info,
-                    "not-a-zip",
-                    None,
-                    "file could not be opened as a zip archive",
-                )],
-            };
+            // Not a valid zip. Before writing it off as a corrupt download,
+            // sniff the head: a RAR/7z/PE blob renamed `.fantome` is a
+            // disguised non-zip payload, not corruption — flag those Malicious
+            // rather than a benign "not-a-zip".
+            return non_zip_report(data, sha256, file_size);
         }
     };
 
@@ -229,15 +239,52 @@ pub fn scan_bytes(data: &[u8]) -> ScanReport {
     let mut has_wad_dir = false;
 
     for i in 0..scan_limit {
+        // Peek the raw directory entry first — this succeeds even for encrypted
+        // members (no decryption needed), so an encrypted entry can't skip every
+        // check by simply failing to open. Gives us the name + encryption flag.
+        let (raw_name_peek, raw_encrypted) = match archive.by_index_raw(i) {
+            Ok(raw) => (Some(raw.name().to_string()), raw.encrypted()),
+            Err(_) => (None, false),
+        };
+
         let mut entry = match archive.by_index(i) {
             Ok(entry) => entry,
             Err(err) => {
-                findings.push(Finding::new(
-                    Severity::Info,
-                    "unreadable-entry",
-                    None,
-                    format!("entry {i} could not be read: {err}"),
-                ));
+                // No cosmetic mod ships encrypted members — flag it Malicious,
+                // and use the peeked name so path/extension checks still apply.
+                let is_encrypted = raw_encrypted
+                    || matches!(&err, ZipError::UnsupportedArchive(m) if *m == ZipError::PASSWORD_REQUIRED);
+                if is_encrypted {
+                    findings.push(Finding::new(
+                        Severity::Malicious,
+                        "encrypted-entry",
+                        raw_name_peek.clone(),
+                        "archive member is password-protected/encrypted — its contents can't be scanned, and no legitimate cosmetic mod ships encrypted members",
+                    ));
+                    if let Some(name) = &raw_name_peek {
+                        let normalized = name.replace('\\', "/");
+                        if let Some(reason) = path_traversal_reason(&normalized) {
+                            findings.push(Finding::new(Severity::Malicious, "path-traversal", Some(name.clone()), reason));
+                        }
+                        if let Some(e) = extension_of(&normalized) {
+                            if DANGEROUS_EXTENSIONS.contains(&e.as_str()) {
+                                findings.push(Finding::new(
+                                    Severity::Malicious,
+                                    "dangerous-extension",
+                                    Some(name.clone()),
+                                    format!("extension \"{e}\" is a runnable/loadable payload type, never legitimate in a cosmetic mod"),
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    findings.push(Finding::new(
+                        Severity::Info,
+                        "unreadable-entry",
+                        raw_name_peek,
+                        format!("entry {i} could not be read: {err}"),
+                    ));
+                }
                 continue;
             }
         };
@@ -274,6 +321,7 @@ pub fn scan_bytes(data: &[u8]) -> ScanReport {
         }
 
         let ext = extension_of(&normalized);
+        let nested_by_ext = ext.as_deref().is_some_and(|e| NESTED_ARCHIVE_EXTENSIONS.contains(&e));
 
         // --- 3. Dangerous extension ---
         let dangerous_ext = ext.as_deref().is_some_and(|e| DANGEROUS_EXTENSIONS.contains(&e));
@@ -286,16 +334,25 @@ pub fn scan_bytes(data: &[u8]) -> ScanReport {
             ));
         }
 
-        // --- 4. Magic-byte disguise (bounded read; never for directories) ---
+        // Declared metadata captured BEFORE the content read (which borrows
+        // `entry`); used by the ratio-bomb guard and the size-lie check.
+        let size = entry.size();
+        let compressed_size = entry.compressed_size();
+
+        // --- 4. Content inspection (bounded read; never for directories) ---
+        // For a possible nested archive we read enough (bounded) to recurse
+        // into it; otherwise just a small polyglot window. Either way capped so
+        // a hostile entry can't make us inflate unboundedly.
         let mut disguised = false;
+        let mut nested_by_magic = false;
+        let mut content: Vec<u8> = Vec::new();
         if !is_dir {
-            let mut buf = Vec::with_capacity(MAGIC_SNIFF_BYTES);
-            // `take` bounds the underlying decompression to MAGIC_SNIFF_BYTES
-            // — we never decompress a whole entry just to sniff its header.
-            let mut limited = (&mut entry).take(MAGIC_SNIFF_BYTES as u64);
-            match limited.read_to_end(&mut buf) {
+            let read_cap: u64 = if nested_by_ext { NESTED_MAX_BYTES } else { POLYGLOT_SCAN_BYTES as u64 };
+            let mut limited = (&mut entry).take(read_cap);
+            match limited.read_to_end(&mut content) {
                 Ok(_) => {
-                    if let Some(kind) = sniff_executable_magic(&buf) {
+                    // Disguise at offset 0 (e.g. a PE named `.dds`).
+                    if let Some(kind) = sniff_executable_magic(&content) {
                         disguised = true;
                         findings.push(Finding::new(
                             Severity::Malicious,
@@ -304,12 +361,31 @@ pub fn scan_bytes(data: &[u8]) -> ScanReport {
                             format!("entry content sniffs as {kind}, regardless of its \"{}\" extension", ext.as_deref().unwrap_or("(none)")),
                         ));
                     }
-                    if !disguised && sniff_nested_archive_magic(&buf) {
+                    // Polyglot: a real Windows PE embedded BEHIND a benign
+                    // header (the offset-0 sniff misses this). Bounded window.
+                    if !disguised {
+                        let window = &content[..content.len().min(POLYGLOT_SCAN_BYTES)];
+                        if let Some(off) = find_embedded_pe(window) {
+                            disguised = true;
+                            findings.push(Finding::new(
+                                Severity::Malicious,
+                                "embedded-executable",
+                                Some(raw_name.clone()),
+                                format!("a Windows PE executable is embedded at byte offset {off}, behind a benign-looking header"),
+                            ));
+                        }
+                    }
+                    nested_by_magic = sniff_nested_archive_magic(&content);
+                    // Size-lie: we produced more decompressed bytes than the
+                    // central directory declares, so the metadata the ratio /
+                    // total guards trust is unreliable. (Inert if the reader
+                    // caps at the declared size; free defense-in-depth if not.)
+                    if (content.len() as u64) > size {
                         findings.push(Finding::new(
                             Severity::Suspicious,
-                            "nested-archive",
+                            "size-mismatch",
                             Some(raw_name.clone()),
-                            "entry content sniffs as a nested archive header",
+                            format!("decompressed to more than the declared {size} bytes — archive size metadata is unreliable"),
                         ));
                     }
                 }
@@ -318,15 +394,13 @@ pub fn scan_bytes(data: &[u8]) -> ScanReport {
                         Severity::Info,
                         "unreadable-entry",
                         Some(raw_name.clone()),
-                        format!("could not read entry data for magic sniff: {err}"),
+                        format!("could not read entry data for content scan: {err}"),
                     ));
                 }
             }
         }
 
-        // --- 5. Compression-ratio bomb ---
-        let size = entry.size();
-        let compressed_size = entry.compressed_size();
+        // --- 5. Compression-ratio bomb (declared metadata) ---
         let ratio_bomb = (compressed_size >= 1024 && compressed_size > 0 && size / compressed_size > MAX_COMPRESSION_RATIO)
             || size > MAX_SINGLE_ENTRY_UNCOMPRESSED;
         if ratio_bomb {
@@ -341,15 +415,52 @@ pub fn scan_bytes(data: &[u8]) -> ScanReport {
             ));
         }
 
-        // --- 6. Nested archive by extension (magic-based hit already logged above) ---
-        let nested_by_ext = ext.as_deref().is_some_and(|e| NESTED_ARCHIVE_EXTENSIONS.contains(&e));
-        if nested_by_ext {
+        // --- 6. Nested archive: recurse (bounded depth) so a payload hidden in
+        // a zip-in-zip can't slip through a shallow scan. Nesting is itself
+        // off-contract for a cosmetic mod, so it always warns; a payload found
+        // inside escalates the whole report to Malicious. ---
+        if nested_by_magic || nested_by_ext {
             findings.push(Finding::new(
                 Severity::Suspicious,
                 "nested-archive",
                 Some(raw_name.clone()),
-                "nested-archive extension can hide payloads from a shallow scan",
+                "entry is a nested archive — its contents are scanned recursively below",
             ));
+            if depth + 1 >= MAX_NEST_DEPTH {
+                findings.push(Finding::new(
+                    Severity::Malicious,
+                    "nested-archive-depth",
+                    Some(raw_name.clone()),
+                    "nested archive exceeds the maximum scan depth — cannot be fully audited",
+                ));
+            } else if !content.is_empty() {
+                match zip::ZipArchive::new(std::io::Cursor::new(&content[..])) {
+                    Ok(_) => {
+                        let inner = scan_bytes_depth(&content, depth + 1);
+                        for mut f in inner.findings {
+                            if f.severity == Severity::Info {
+                                continue;
+                            }
+                            f.entry = Some(match &f.entry {
+                                Some(e) => format!("{raw_name}!/{e}"),
+                                None => raw_name.clone(),
+                            });
+                            findings.push(f);
+                        }
+                    }
+                    Err(_) => {
+                        // Nested magic/extension but not a parseable zip (rar/7z/
+                        // tar, or a truncated bomb layer) — an opaque payload we
+                        // can't audit. Never legitimate in a cosmetic mod.
+                        findings.push(Finding::new(
+                            Severity::Malicious,
+                            "opaque-archive",
+                            Some(raw_name.clone()),
+                            "entry is a nested archive in a format this scanner cannot open (or a truncated bomb layer) — its contents cannot be audited",
+                        ));
+                    }
+                }
+            }
         }
 
         // --- 7. Content-type classification (skip dirs and anything already flagged malicious) ---
@@ -532,6 +643,70 @@ fn sniff_nested_archive_magic(buf: &[u8]) -> bool {
         || buf.starts_with(&[0x37, 0x7A, 0xBC, 0xAF]) // 7z\xbc\xaf
 }
 
+/// Search `buf` for a Windows PE embedded BEHIND a benign header (the polyglot
+/// trick). Structural match — locate an `MZ`, follow its `e_lfanew` to a
+/// `PE\0\0` signature — so a stray "MZ" in texture data doesn't false-positive.
+/// Returns the offset of the `MZ`. Bounded by `buf.len()` (caller passes a
+/// capped window).
+fn find_embedded_pe(buf: &[u8]) -> Option<usize> {
+    let mut i = 0usize;
+    // Need at least MZ + the e_lfanew field (ends at 0x40) to validate.
+    while i + 0x40 <= buf.len() {
+        if buf[i] == 0x4D && buf[i + 1] == 0x5A {
+            let lfanew_off = i + 0x3C;
+            let e_lfanew = u32::from_le_bytes([
+                buf[lfanew_off],
+                buf[lfanew_off + 1],
+                buf[lfanew_off + 2],
+                buf[lfanew_off + 3],
+            ]) as usize;
+            if let Some(pe_off) = i.checked_add(e_lfanew) {
+                if pe_off + 4 <= buf.len() && &buf[pe_off..pe_off + 4] == b"PE\x00\x00" {
+                    return Some(i);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Build the report for input that isn't a parseable zip. Sniffs the head for a
+/// disguised non-zip payload (PE/RAR/7z renamed `.fantome`) and escalates those
+/// to Malicious; a genuinely-unrecognized blob stays a benign "not-a-zip".
+fn non_zip_report(data: &[u8], sha256: String, file_size: u64) -> ScanReport {
+    let head = &data[..data.len().min(POLYGLOT_SCAN_BYTES)];
+    let finding = if let Some(kind) = sniff_executable_magic(head) {
+        Finding::new(
+            Severity::Malicious,
+            "disguised-executable",
+            None,
+            format!("file is not a zip but its content sniffs as {kind} — a disguised payload renamed to look like a mod"),
+        )
+    } else if find_embedded_pe(head).is_some() {
+        Finding::new(
+            Severity::Malicious,
+            "embedded-executable",
+            None,
+            "file is not a zip but contains an embedded Windows PE executable",
+        )
+    } else if head.starts_with(&[0x52, 0x61, 0x72, 0x21, 0x1A]) || head.starts_with(&[0x37, 0x7A, 0xBC, 0xAF]) {
+        Finding::new(
+            Severity::Malicious,
+            "disguised-archive-format",
+            None,
+            "file is a RAR/7z archive renamed to look like a .fantome — an opaque, unauditable format that is never a legitimate cosmetic mod",
+        )
+    } else {
+        Finding::new(Severity::Info, "not-a-zip", None, "file could not be opened as a zip archive")
+    };
+    let verdict = match finding.severity {
+        Severity::Malicious => Verdict::Malicious,
+        _ => Verdict::Suspicious,
+    };
+    ScanReport { verdict, sha256, file_size, entry_count: 0, total_uncompressed: 0, findings: vec![finding] }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -662,5 +837,96 @@ mod tests {
         // sha256("hello") — a well-known test vector.
         let report = scan_bytes(b"hello");
         assert_eq!(report.sha256, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    }
+
+    /// Minimal blob that `find_embedded_pe` accepts: `MZ` + `e_lfanew`(0x40) +
+    /// `PE\0\0` at 0x40. Not a runnable PE, just the structural signature.
+    fn fake_pe() -> Vec<u8> {
+        let mut pe = vec![0u8; 0x44];
+        pe[0] = b'M';
+        pe[1] = b'Z';
+        pe[0x3C] = 0x40; // e_lfanew = 0x40 (LE)
+        pe[0x40] = b'P';
+        pe[0x41] = b'E';
+        pe
+    }
+
+    #[test]
+    fn encrypted_entry_is_malicious() {
+        // C1: an encrypted member used to skip EVERY check and yield Clean.
+        use std::io::Write as _;
+        use zip::AesMode;
+        let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = SimpleFileOptions::default().with_aes_encryption(AesMode::Aes256, "secret");
+        writer.start_file("WAD/secret.wad.client", opts).unwrap();
+        writer.write_all(b"hidden payload").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+
+        let report = scan_bytes(&bytes);
+        assert_eq!(report.verdict, Verdict::Malicious, "{:?}", report.findings);
+        assert!(report.findings.iter().any(|f| f.code == "encrypted-entry"), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn polyglot_embedded_pe_is_malicious() {
+        // C3: a PE hidden PAST a benign header (offset-0 sniff misses it).
+        let mut payload = vec![b'A'; 128];
+        payload.extend_from_slice(&fake_pe());
+        let bytes = build_zip(&[("WAD/Splash.dds", &payload)]);
+        let report = scan_bytes(&bytes);
+        assert_eq!(report.verdict, Verdict::Malicious, "{:?}", report.findings);
+        assert!(report.findings.iter().any(|f| f.code == "embedded-executable"), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn nested_archive_hiding_exe_is_malicious() {
+        // C2: a payload inside a zip-in-zip used to only warn (click-through).
+        let inner = build_zip(&[("helper.exe", b"MZ fake pe")]);
+        let bytes = build_zip(&[("WAD/pack.zip", &inner)]);
+        let report = scan_bytes(&bytes);
+        assert_eq!(report.verdict, Verdict::Malicious, "{:?}", report.findings);
+        assert!(
+            report.findings.iter().any(|f| f.entry.as_deref().is_some_and(|e| e.contains("!/"))),
+            "nested finding should be path-prefixed: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn opaque_nested_format_is_malicious() {
+        // A nested-archive-EXTENSION entry that isn't a parseable zip (rar/7z/
+        // truncated bomb) can't be audited → Malicious, not a click-through.
+        let bytes = build_zip(&[("WAD/inner.rar", b"Rar!\x1a\x07\x00 not really a rar body")]);
+        let report = scan_bytes(&bytes);
+        assert_eq!(report.verdict, Verdict::Malicious, "{:?}", report.findings);
+        assert!(report.findings.iter().any(|f| f.code == "opaque-archive"), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn non_zip_disguised_pe_is_malicious() {
+        // H7: a raw PE renamed .fantome used to return a benign "not-a-zip".
+        let mut blob = vec![b'M', b'Z'];
+        blob.extend_from_slice(&[0u8; 64]);
+        let report = scan_bytes(&blob);
+        assert_eq!(report.verdict, Verdict::Malicious, "{:?}", report.findings);
+        assert!(report.findings.iter().any(|f| f.code == "disguised-executable"), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn non_zip_disguised_rar_is_malicious() {
+        let mut blob = vec![0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00];
+        blob.extend_from_slice(&[0u8; 32]);
+        let report = scan_bytes(&blob);
+        assert_eq!(report.verdict, Verdict::Malicious, "{:?}", report.findings);
+        assert!(report.findings.iter().any(|f| f.code == "disguised-archive-format"), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn genuinely_corrupt_file_still_benign_not_a_zip() {
+        // The H7 escalation must NOT false-positive on an actually-corrupt
+        // download with no executable/archive signature.
+        let report = scan_bytes(b"this is definitely not a zip file");
+        assert_eq!(report.verdict, Verdict::Suspicious);
+        assert!(report.findings.iter().any(|f| f.code == "not-a-zip"));
     }
 }

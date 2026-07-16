@@ -205,12 +205,28 @@ fn extract_one<R: std::io::Read + std::io::Seek>(
     rel_path: &str,
 ) -> Result<(), DownloadError> {
     let mut entry = archive.by_index(index)?;
+    // Reject an absurdly large declared size, and cap the actual copy, so a
+    // zip-bomb entry in a compromised upstream can't fill the user's disk.
+    const MAX_EXTRACT_ENTRY_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB / entry
+    if entry.size() > MAX_EXTRACT_ENTRY_BYTES {
+        return Err(DownloadError::Other(format!(
+            "archive entry '{rel_path}' declares {} bytes, exceeding the {MAX_EXTRACT_ENTRY_BYTES}-byte per-file cap — refusing to extract",
+            entry.size()
+        )));
+    }
     let dest = target_root.join(rel_path);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut out = std::fs::File::create(&dest)?;
-    std::io::copy(&mut entry, &mut out)?;
+    // `take` bounds the bytes written even if the declared size lies (UFCS so no
+    // extra `use std::io::Read` import is needed).
+    let mut capped = std::io::Read::take(&mut entry, MAX_EXTRACT_ENTRY_BYTES);
+    let written = std::io::copy(&mut capped, &mut out)?;
+    if written >= MAX_EXTRACT_ENTRY_BYTES {
+        let _ = std::fs::remove_file(&dest);
+        return Err(DownloadError::Other(format!("archive entry '{rel_path}' exceeded the {MAX_EXTRACT_ENTRY_BYTES}-byte per-file cap during extraction")));
+    }
     Ok(())
 }
 

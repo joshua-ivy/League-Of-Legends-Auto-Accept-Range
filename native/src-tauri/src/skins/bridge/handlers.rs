@@ -1078,6 +1078,32 @@ fn is_valid_local_league_path(game_path: &str) -> bool {
     dir.is_dir() && dir.join("League of Legends.exe").is_file()
 }
 
+fn paths_equal(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
+}
+
+/// Stricter validation for a BRIDGE-supplied League path (M6). The bridge is
+/// unauthenticated, so an untrusted local caller must not be able to repoint
+/// Chud's `league_path` at an attacker-created folder that merely contains a
+/// same-named exe — that path later feeds the (often elevated) Pengu Loader
+/// activation. When the client is running (the normal case, since the plugin
+/// sending this runs INSIDE a live client) the only acceptable path is the
+/// client's OWN reported install dir; otherwise require the real install
+/// structure (a sibling `LeagueClient.exe`), which a lone planted game exe lacks.
+fn is_valid_bridge_league_path(game_path: &str) -> bool {
+    if !is_valid_local_league_path(game_path) {
+        return false;
+    }
+    let candidate = Path::new(game_path.trim());
+    if let Some(detected) = crate::skins::lcu_ext::resolve_game_dir() {
+        return paths_equal(candidate, &detected);
+    }
+    candidate.parent().map(|p| p.join("LeagueClient.exe").is_file()).unwrap_or(false)
+}
+
 async fn handle_settings_request(ctx: &BridgeContext) {
     let (threshold, game_path) = {
         let app_state = ctx.app.state::<std::sync::Arc<crate::AppState>>();
@@ -1121,10 +1147,10 @@ fn handle_settings_save(
     let game_path = game_path.unwrap_or_default();
     let trimmed_path = game_path.trim();
 
-    if !trimmed_path.is_empty() && !is_valid_local_league_path(trimmed_path) {
+    if !trimmed_path.is_empty() && !is_valid_bridge_league_path(trimmed_path) {
         ctx.handle.broadcast_json(json!({
             "type": "settings-saved", "success": false,
-            "error": "League path must be a valid local League of Legends folder.",
+            "error": "League path must match your running client's own install folder.",
         }));
         return;
     }

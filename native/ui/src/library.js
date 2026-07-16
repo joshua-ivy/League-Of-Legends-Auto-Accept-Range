@@ -9,7 +9,7 @@
   const esc = S.esc;
   const inv = S.invoke;
 
-  const CI = (id) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${id}.png`;
+  const CI = (id) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${Number(id) || 0}.png`;
   const CAT_DISPLAY = { champion_skin: "Champion skins", map_skin: "Maps", ui: "HUD & UI", vfx: "VFX", announcer: "Announcer", voiceover: "Voiceover", sfx: "Sound FX", font: "Fonts", loading_screen: "Loading screens", miscellaneous: "Other" };
   const THEME_DISPLAY = { anime: "Anime", meme: "Meme", fantasy: "Fantasy", scifi: "Sci-Fi", events: "Events" };
   const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -148,7 +148,7 @@
   }
   function thumbInner(m) {
     if (m.thumb) return "";
-    if (m.champId) return `<img class="lb-ph-icon" loading="lazy" src="${CI(m.champId)}" alt="" onerror="this.style.display='none'">`;
+    if (m.champId) return `<img class="lb-ph-icon" loading="lazy" src="${CI(m.champId)}" alt="" data-imgerr="hide">`;
     return `<span class="lb-ph-cat">${esc(catShort(m.category))}</span>`;
   }
   const DL_ICON = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>`;
@@ -188,7 +188,7 @@
     const champsAll = Object.keys(champCounts).map((name) => ({ name, count: champCounts[name], champId: (list.find((m) => m.champ === name) || {}).champId })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
     const vis = st.railAll ? champsAll : champsAll.slice(0, 6);
     const champRows = `<div class="lb-rail-row ${st.champ ? "" : "on"}" data-champ=""><span class="lb-ci lb-ci-all"></span><span class="lb-rn">All champions</span></div>` +
-      vis.map((c) => `<div class="lb-rail-row ${st.champ === c.name ? "on" : ""}" data-champ="${esc(c.name)}"><img class="lb-ci" loading="lazy" src="${CI(c.champId)}" alt="" onerror="this.style.visibility='hidden'"><span class="lb-rn">${esc(c.name)}</span><span class="lb-rc">${c.count}</span></div>`).join("");
+      vis.map((c) => `<div class="lb-rail-row ${st.champ === c.name ? "on" : ""}" data-champ="${esc(c.name)}"><img class="lb-ci" loading="lazy" src="${CI(c.champId)}" alt="" data-imgerr="vis"><span class="lb-rn">${esc(c.name)}</span><span class="lb-rc">${c.count}</span></div>`).join("");
     const showAll = champsAll.length > 6 ? `<div class="lb-showall" data-railall="1">${st.railAll ? "Show less ▴" : `Show all ${champsAll.length} champions ▾`}</div>` : "";
 
     const catCounts = {};
@@ -281,7 +281,7 @@
       return `<div class="lb-bundle">
         <div class="lb-bcollage">${collage}<span class="lb-bcount">${b.skins.length}</span></div>
         <div class="lb-bbody">
-          <div class="lb-btitle">${b.champId ? `<img class="lb-ci" src="${CI(b.champId)}" alt="" onerror="this.style.display='none'">` : ""}<span>${esc(b.champ)}</span></div>
+          <div class="lb-btitle">${b.champId ? `<img class="lb-ci" src="${CI(b.champId)}" alt="" data-imgerr="hide">` : ""}<span>${esc(b.champ)}</span></div>
           <div class="lb-bsub">${sub}</div>
           <div class="lb-bnames">${b.skins.map((s) => esc(s.name)).join(" · ")}</div>
           <div class="lb-baction">${action}</div>

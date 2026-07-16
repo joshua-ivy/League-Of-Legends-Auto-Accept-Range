@@ -67,7 +67,10 @@ impl Stats {
     pub fn record_accept(&mut self) {
         self.total_matches_accepted += 1;
         self.session_matches_accepted += 1;
-        self.save();
+        // Called from async tasks (auto_accept.rs, lcu_ws.rs) - offload the
+        // blocking write so it doesn't stall the caller's task.
+        let snapshot = self.clone();
+        tauri::async_runtime::spawn_blocking(move || snapshot.save());
     }
 
     /// Human-readable uptime, e.g. "2h 14m 06s".

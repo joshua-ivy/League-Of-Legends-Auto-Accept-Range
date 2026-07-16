@@ -128,12 +128,22 @@ async fn stream_get(
         return Err(DownloadError::Other(format!("HTTP {status} for {url}")));
     }
 
+    if let Some(len) = response.content_length() {
+        if len > MAX_DOWNLOAD_BYTES {
+            return Err(DownloadError::Other(format!("declared size {len} exceeds the {MAX_DOWNLOAD_BYTES}-byte download cap for {url}")));
+        }
+    }
     let total = total_hint.or_else(|| response.content_length());
     let mut buf = Vec::new();
     let mut downloaded = 0u64;
     while let Some(chunk) = response.chunk().await? {
         buf.extend_from_slice(&chunk);
         downloaded += chunk.len() as u64;
+        // Cap in-flight so a chunked response with no/lying Content-Length can't
+        // stream unbounded and OOM the process during a live game.
+        if downloaded > MAX_DOWNLOAD_BYTES {
+            return Err(DownloadError::Other(format!("download exceeded the {MAX_DOWNLOAD_BYTES}-byte cap for {url}")));
+        }
         progress(baseline + downloaded, total);
     }
     Ok(buf)
@@ -178,7 +188,7 @@ async fn stream_get_with_retry(
 /// Single-attempt GET-to-bytes with no chunked progress reporting — used for
 /// the many small per-file downloads in the incremental skin-update path.
 async fn simple_get(client: &reqwest::Client, url: &str, timeout: Duration) -> Result<Vec<u8>, DownloadError> {
-    let response = client.get(url).timeout(timeout).send().await?;
+    let mut response = client.get(url).timeout(timeout).send().await?;
     let status = response.status();
     if status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS {
         return Err(DownloadError::RateLimited);
@@ -186,8 +196,26 @@ async fn simple_get(client: &reqwest::Client, url: &str, timeout: Duration) -> R
     if !status.is_success() {
         return Err(DownloadError::Other(format!("HTTP {status} for {url}")));
     }
-    Ok(response.bytes().await?.to_vec())
+    if let Some(len) = response.content_length() {
+        if len > MAX_DOWNLOAD_BYTES {
+            return Err(DownloadError::Other(format!("declared size {len} exceeds the {MAX_DOWNLOAD_BYTES}-byte download cap for {url}")));
+        }
+    }
+    // Stream with a cap rather than buffering the whole body unbounded.
+    let mut buf = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        buf.extend_from_slice(&chunk);
+        if buf.len() as u64 > MAX_DOWNLOAD_BYTES {
+            return Err(DownloadError::Other(format!("download exceeded the {MAX_DOWNLOAD_BYTES}-byte cap for {url}")));
+        }
+    }
+    Ok(buf)
 }
+
+/// Anti-runaway ceiling for any single in-memory download. Well above the
+/// largest legitimate payload (the skins repo zip / a ~30 MB hash shard), so it
+/// only ever trips on a malicious/broken server streaming without end.
+const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 /// Decide incremental vs. full download and run it (ported from
 /// `perform_skin_sync`'s `needs_full_download` decision). Win32

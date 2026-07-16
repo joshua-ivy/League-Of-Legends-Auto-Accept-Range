@@ -318,13 +318,24 @@ impl Config {
     /// Load from disk, falling back to defaults for a missing/invalid file.
     pub fn load() -> Self {
         let path = config_path();
-        match std::fs::read_to_string(&path) {
+        let mut cfg = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
                 eprintln!("config: parse error ({e}); using defaults");
                 Config::default()
             }),
             Err(_) => Config::default(),
-        }
+        };
+        cfg.clamp_intervals();
+        cfg
+    }
+
+    /// Clamp intervals that gate safety-critical timing so a stale/hand-edited
+    /// config value can't self-lock the app: the safety monitor fails injection
+    /// closed on any snapshot older than 15s, so an oversized `safety.check_interval`
+    /// would wedge it shut; `auto_accept.check_interval` is bounded on the low end too.
+    fn clamp_intervals(&mut self) {
+        self.safety.check_interval = self.safety.check_interval.clamp(1.0, 10.0);
+        self.auto_accept.check_interval = self.auto_accept.check_interval.clamp(0.2, 10.0);
     }
 
     /// Persist to disk (creates the config dir if needed).

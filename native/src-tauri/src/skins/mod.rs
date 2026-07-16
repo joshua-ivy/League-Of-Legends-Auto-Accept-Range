@@ -24,7 +24,7 @@ pub mod swiftplay;
 pub mod ticker;
 pub mod trigger;
 
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Mutex;
 
 /// All mutable skins state, one coarse Mutex (see `docs/SKINS_PORT.md`
@@ -36,13 +36,23 @@ pub struct SkinsState {
     pub phase_gen: AtomicU64,
     /// Bumped on each loadout-ticker (re)arm (S5) for the same reason.
     pub ticker_gen: AtomicU64,
+    /// Set while an injection trigger is building/running an overlay, so the two
+    /// fire paths (loadout ticker + GameStart fallback) can't concurrently build
+    /// against the same mods/overlay dirs. Test-and-set at the top of
+    /// `trigger::trigger_injection`, cleared when it returns.
+    pub injection_inflight: AtomicBool,
 }
 
 impl SkinsState {
     pub fn new() -> Self {
         let mut shared = state::SkinsShared::default();
         shared.favorite_skins = favorites::load();
-        Self { shared: Mutex::new(shared), phase_gen: AtomicU64::new(0), ticker_gen: AtomicU64::new(0) }
+        Self {
+            shared: Mutex::new(shared),
+            phase_gen: AtomicU64::new(0),
+            ticker_gen: AtomicU64::new(0),
+            injection_inflight: AtomicBool::new(false),
+        }
     }
 }
 

@@ -108,7 +108,15 @@ pub fn decode_token(token_str: &str, now_unix: u64) -> Result<TokenData, TokenEr
 
     let compressed = URL_SAFE_NO_PAD.decode(stripped).map_err(TokenError::Base64)?;
     let mut data = Vec::new();
-    ZlibDecoder::new(&compressed[..]).read_to_end(&mut data).map_err(TokenError::Decompress)?;
+    // Bound decompression: a legit token inflates to <=57 bytes, but a crafted
+    // "invite token" could zlib-bomb to gigabytes and OOM the client. `take`
+    // caps the inflated output; anything past the cap is a bogus token and
+    // fails the version/length checks below.
+    const MAX_TOKEN_DECOMPRESSED: u64 = 4096;
+    ZlibDecoder::new(&compressed[..])
+        .take(MAX_TOKEN_DECOMPRESSED)
+        .read_to_end(&mut data)
+        .map_err(TokenError::Decompress)?;
 
     if data.len() < 13 {
         return Err(TokenError::TooShort);

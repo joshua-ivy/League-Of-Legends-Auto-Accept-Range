@@ -6,6 +6,8 @@
 #![allow(dead_code)] // consumed by S3+ (injector/overlay wiring)
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 
@@ -124,7 +126,79 @@ pub fn pengu_loader_resource_dir() -> PathBuf {
 /// call at high frequency (the injection safety policy consults this on
 /// every gated operation and from UI polls).
 pub fn tools_present(tools_dir: &Path) -> bool {
-    REQUIRED_TOOLS.iter().all(|tool| tools_dir.join(tool).exists())
+    REQUIRED_TOOLS.iter().all(|tool| tools_dir.join(tool).exists()) && cslol_dll_ok(tools_dir)
+}
+
+/// The injection gate's DLL integrity check (mtime+size cached so the
+/// high-frequency safety poll doesn't re-hash a ~MB DLL every tick). Returns
+/// true only if `cslol-dll.dll` is present AND its SHA-256 either matches the
+/// shipped allowlist OR a trust-on-first-use hash recorded on the first clean
+/// run — so a LATER swap of the DLL (malware persistence) is refused, without
+/// breaking a legitimate user-supplied DLL that predates the allowlist.
+pub fn cslol_dll_ok(tools_dir: &Path) -> bool {
+    let dll_path = tools_dir.join("cslol-dll.dll");
+    let Ok(meta) = std::fs::metadata(&dll_path) else {
+        return false;
+    };
+    let key = meta.modified().ok().map(|mt| (mt, meta.len()));
+    if let Some(key) = key {
+        let cache = DLL_VERIFY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached_key, ok)) = *cache {
+            if cached_key == key {
+                return ok;
+            }
+        }
+    }
+    let ok = evaluate_dll_trust(&dll_path);
+    if let Some(key) = key {
+        *DLL_VERIFY_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, ok));
+    }
+    ok
+}
+
+static DLL_VERIFY_CACHE: Mutex<Option<((SystemTime, u64), bool)>> = Mutex::new(None);
+
+/// Persisted trust-on-first-use hash for a user-supplied cslol-dll.dll whose
+/// hash isn't in the shipped allowlist — recorded once, then enforced.
+fn dll_trust_path() -> PathBuf {
+    crate::skins::paths::state_dir().join("cslol_dll.trust")
+}
+
+fn evaluate_dll_trust(dll_path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(dll_path) else {
+        return false;
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let hex = format!("{:x}", hasher.finalize());
+
+    if VALID_DLL_HASHES.contains(&hex.as_str()) {
+        return true;
+    }
+
+    let trust_path = dll_trust_path();
+    match std::fs::read_to_string(&trust_path) {
+        Ok(saved) if saved.trim() == hex => true, // trusted on a prior run
+        Ok(saved) if !saved.trim().is_empty() => {
+            log_error!(
+                "[INJECT] cslol-dll.dll hash changed since first trusted use (was {}, now {hex}) — refusing to use it (possible tampering). Delete {} to re-trust a deliberate update.",
+                saved.trim(),
+                trust_path.display()
+            );
+            false
+        }
+        _ => {
+            // First sight of a present-but-unlisted DLL: trust-on-first-use.
+            if let Some(parent) = trust_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&trust_path, &hex);
+            log_warn!(
+                "[INJECT] Trusting user-supplied cslol-dll.dll on first use (hash {hex}); a later change to this file will be refused as tampering."
+            );
+            true
+        }
+    }
 }
 
 /// Check if all required CSLOL tools are present (ported from
@@ -136,6 +210,11 @@ pub fn check_tools_available(tools_dir: &Path) -> bool {
     if !missing.is_empty() {
         log_warn!("[INJECT] Missing CSLOL tools: {:?}", missing);
         log_warn!("[INJECT] Please place the bundled cslol tools in {}", tools_dir.display());
+        return false;
+    }
+
+    if !cslol_dll_ok(tools_dir) {
+        log_warn!("[INJECT] cslol-dll.dll failed integrity verification — refusing to inject");
         return false;
     }
 

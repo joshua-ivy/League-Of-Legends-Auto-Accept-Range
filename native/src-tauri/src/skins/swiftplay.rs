@@ -219,27 +219,36 @@ async fn extract_tracked_skins(skins: &Arc<SkinsState>) {
         return;
     }
 
-    let mods_dir = paths::injection_mods_dir();
-    storage::clean_mods_dir(&mods_dir);
-    storage::clean_overlay_dir(&paths::injection_overlay_dir());
+    // Blocking fs/zip work (dir cleanup + per-champion zip resolution/extraction)
+    // runs off the phase actor task via spawn_blocking - this used to run
+    // inline here, stalling every gameflow transition while extraction ran.
+    let blocking_filtered = filtered.clone();
+    let extracted = tauri::async_runtime::spawn_blocking(move || {
+        let mods_dir = paths::injection_mods_dir();
+        storage::clean_mods_dir(&mods_dir);
+        storage::clean_overlay_dir(&paths::injection_overlay_dir());
 
-    let mut extracted = Vec::new();
-    for (champion_id, skin_id) in &filtered {
-        let is_base = special::is_base(*skin_id);
-        let (injection_name, chroma_id) = if is_base { (format!("skin_{skin_id}"), None) } else { (format!("chroma_{skin_id}"), Some(*skin_id)) };
+        let mut extracted = Vec::new();
+        for (champion_id, skin_id) in &blocking_filtered {
+            let is_base = special::is_base(*skin_id);
+            let (injection_name, chroma_id) = if is_base { (format!("skin_{skin_id}"), None) } else { (format!("chroma_{skin_id}"), Some(*skin_id)) };
 
-        let Some(zip_path) = zips::resolve_zip(&paths::skins_dir(), &injection_name, chroma_id, Some(&injection_name), None, Some(*champion_id)) else {
-            log_warn!("[swiftplay] Skin ZIP not found: {injection_name}");
-            continue;
-        };
-        match storage::extract_zip_to_mod(&mods_dir, &zip_path) {
-            Ok(folder) => {
-                log_info!("[swiftplay] Extracted {injection_name} to mods directory");
-                extracted.push(folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            let Some(zip_path) = zips::resolve_zip(&paths::skins_dir(), &injection_name, chroma_id, Some(&injection_name), None, Some(*champion_id)) else {
+                log_warn!("[swiftplay] Skin ZIP not found: {injection_name}");
+                continue;
+            };
+            match storage::extract_zip_to_mod(&mods_dir, &zip_path) {
+                Ok(folder) => {
+                    log_info!("[swiftplay] Extracted {injection_name} to mods directory");
+                    extracted.push(folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                }
+                Err(e) => log_warn!("[swiftplay] Error extracting skin {skin_id}: {e}"),
             }
-            Err(e) => log_warn!("[swiftplay] Error extracting skin {skin_id}: {e}"),
         }
-    }
+        extracted
+    })
+    .await
+    .unwrap_or_default();
 
     if extracted.is_empty() {
         log_warn!("[swiftplay] No mods extracted - cannot inject");

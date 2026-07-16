@@ -9,6 +9,10 @@
   const inv = S.invoke;
 
   const RATE = 44100;
+  // Legit announcer clips are tiny; anything past this is not worth decoding
+  // on the main thread (decodeAudioData + the downmix/resample loops in toPcm
+  // run sync and would freeze the UI on a huge file).
+  const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
   const st = { slots: null, name: "My Announcer", audio: {}, includeMilestones: false, building: false };
   let root = null;
   let ac = null; // shared AudioContext
@@ -132,12 +136,23 @@
     root.querySelectorAll("[data-play]").forEach((b) => b.onclick = () => preview(b.dataset.play));
     root.querySelectorAll("[data-rec]").forEach((b) => b.onclick = () => toggleRec(b.dataset.rec));
     root.querySelectorAll("[data-clear]").forEach((b) => b.onclick = () => { delete st.audio[b.dataset.clear]; paint(); });
-    root.querySelectorAll("[data-file]").forEach((inp) => inp.onchange = async (e) => { const f = e.target.files[0]; if (f) await assign(inp.dataset.file, await f.arrayBuffer()); });
+    root.querySelectorAll("[data-file]").forEach((inp) => inp.onchange = async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      const buf = await f.arrayBuffer();
+      if (buf.byteLength > MAX_AUDIO_BYTES) { toast("File too large", "Announcer clips should be a few seconds — pick a smaller file.", "warning"); return; }
+      await assign(inp.dataset.file, buf);
+    });
     // drag & drop onto a slot row
     root.querySelectorAll("[data-slotrow]").forEach((row) => {
       row.ondragover = (e) => { e.preventDefault(); row.classList.add("drop"); };
       row.ondragleave = () => row.classList.remove("drop");
-      row.ondrop = async (e) => { e.preventDefault(); row.classList.remove("drop"); const f = e.dataTransfer.files[0]; if (f && f.type.startsWith("audio")) await assign(row.dataset.slotrow, await f.arrayBuffer()); };
+      row.ondrop = async (e) => {
+        e.preventDefault(); row.classList.remove("drop");
+        const f = e.dataTransfer.files[0]; if (!f || !f.type.startsWith("audio")) return;
+        const buf = await f.arrayBuffer();
+        if (buf.byteLength > MAX_AUDIO_BYTES) { toast("File too large", "Announcer clips should be a few seconds — pick a smaller file.", "warning"); return; }
+        await assign(row.dataset.slotrow, buf);
+      };
     });
     const build = document.getElementById("stuBuild"); if (build) build.onclick = doBuild;
   }

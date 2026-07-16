@@ -30,13 +30,13 @@
     const url = champImg(id);
     const letter = esc(String(name || id || "?")[0] || "?");
     return `<div class="champ-sq">
-      ${url ? `<img src="${url}" alt="" onerror="this.style.display='none';this.parentElement.querySelector('.fallback').style.display='flex'">` : ""}
+      ${url ? `<img src="${url}" alt="" data-imgerr="fallback">` : ""}
       <span class="fallback" style="display:${url ? "none" : "flex"}">${letter}</span>
       ${mastery ? `<span class="mast">M${mastery}</span>` : ""}
     </div>`;
   }
   function itemSlot(url, trinket) {
-    return `<div class="islot${trinket ? " trinket" : ""}">${url ? `<img src="${url}" alt="" onerror="this.style.display='none'">` : ""}</div>`;
+    return `<div class="islot${trinket ? " trinket" : ""}">${url ? `<img src="${url}" alt="" data-imgerr="hide">` : ""}</div>`;
   }
   function ring(size, stroke, pct, color) {
     const r = (size - stroke) / 2, c = 2 * Math.PI * r;
@@ -69,7 +69,7 @@
       <span class="fcorner tl">${tick}</span><span class="fcorner tr">${tick}</span><span class="fcorner bl">${tick}</span><span class="fcorner br">${tick}</span>
       <div class="pf-banner">
         <div class="pf-avatar">
-          <div class="hexmask">${ppIcon(s.profileIconId) ? `<img src="${ppIcon(s.profileIconId)}" alt="" onerror="this.style.display='none'">` : ""}</div>
+          <div class="hexmask">${ppIcon(s.profileIconId) ? `<img src="${ppIcon(s.profileIconId)}" alt="" data-imgerr="hide">` : ""}</div>
           <svg class="hexring" viewBox="0 0 110 110" fill="none"><polygon points="55,4 102,29 102,81 55,106 8,81 8,29" stroke="var(--gold)" stroke-width="2" opacity="0.85"/></svg>
           <span class="lvl">${esc(s.summonerLevel)}</span>
         </div>
@@ -164,7 +164,7 @@
     const items6 = [0, 1, 2, 3, 4, 5].map((n) => itemSlot(assetPath(icons[n]))).join("");
     const trinket = itemSlot(assetPath(icons[6]), true);
     const spellIcons = m.spellIcons || [];
-    const spells = (m.spells || []).map((sp, n) => { const u = assetPath(spellIcons[n]); return `<span class="sp">${u ? `<img src="${u}" alt="" onerror="this.style.display='none'">` : ""}</span>`; }).join("");
+    const spells = (m.spells || []).map((sp, n) => { const u = assetPath(spellIcons[n]); return `<span class="sp">${u ? `<img src="${u}" alt="" data-imgerr="hide">` : ""}</span>`; }).join("");
     const lp = m.lpDelta == null ? "" : `<span class="rlp ${m.lpDelta >= 0 ? "up" : "dn"}">${m.lpDelta >= 0 ? "+" : ""}${m.lpDelta} LP</span>`;
     return `<div class="match ${m.result}" data-mid="${m.id}">
       <div class="match-main">

@@ -47,7 +47,31 @@ const LOG_SEPARATOR_WIDTH: usize = 80;
 /// `InjectionTrigger.trigger_injection`). `name` is the already-resolved
 /// injection token (`"skin_1234"` / `"chroma_5678"`) from
 /// `ticker::resolve_injection_name`.
+/// Clears `injection_inflight` on drop so every return path (including the
+/// transient early-returns below) releases it and a later retry can proceed.
+/// Holds an `Arc` clone (not a borrow) so it doesn't conflict with the function
+/// moving `skins` into downstream calls.
+struct InflightGuard(Arc<SkinsState>);
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.injection_inflight.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id: u64, name: String, champion_name: String) {
+    // Serialize the two fire paths (loadout ticker + GameStart fallback) so they
+    // can't both build an overlay for the same game concurrently. Test-and-set;
+    // the guard clears it on return, so a transient early-return still retries.
+    if skins
+        .injection_inflight
+        .compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
+        .is_err()
+    {
+        log_warn!("[INJECT] Injection already in progress — skipping duplicate trigger for {name}");
+        return;
+    }
+    let _inflight = InflightGuard(Arc::clone(&skins));
+
     let app_state = app.state::<Arc<AppState>>().inner().clone();
     // P0-A safety gate at the pipeline entry: full policy check (master
     // switch, versioned consent, LCU reachability, phase, ranked/unknown

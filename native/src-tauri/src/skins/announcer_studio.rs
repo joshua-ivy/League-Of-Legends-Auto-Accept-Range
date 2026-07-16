@@ -158,12 +158,22 @@ fn pcm_to_wem(pcm: &[u8], rate: u32) -> Vec<u8> {
 fn read_vanilla_wpk() -> Result<Vec<(u64, Vec<u8>)>, String> {
     let path = studio_res_dir().join("vanilla_audio.wpk");
     let data = std::fs::read(&path).map_err(|e| format!("bundled wpk missing ({}): {e}", path.display()))?;
+    // Guard the fixed-offset header reads below (`data[..4]`, `data[8..12]`) -
+    // a truncated/corrupt bundled file must return Err, not panic.
+    if data.len() < 12 {
+        return Err("bundled wpk truncated (missing header)".into());
+    }
     if &data[..4] != b"r3d2" {
         return Err("bundled wpk not a WPK".into());
     }
     let count = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
+        // Guards the offset-table read below - a corrupt `count` could
+        // otherwise run the table past `data`'s end and panic.
+        if data.len() < 16 + i * 4 {
+            break;
+        }
         let eoff = u32::from_le_bytes(data[12 + i * 4..16 + i * 4].try_into().unwrap()) as usize;
         if eoff == 0 || eoff + 12 > data.len() {
             continue;
@@ -171,6 +181,9 @@ fn read_vanilla_wpk() -> Result<Vec<(u64, Vec<u8>)>, String> {
         let doff = u32::from_le_bytes(data[eoff..eoff + 4].try_into().unwrap()) as usize;
         let dsize = u32::from_le_bytes(data[eoff + 4..eoff + 8].try_into().unwrap()) as usize;
         let nlen = u32::from_le_bytes(data[eoff + 8..eoff + 12].try_into().unwrap()) as usize;
+        if eoff + 12 + nlen * 2 > data.len() {
+            continue;
+        }
         let name = String::from_utf16_lossy(
             &data[eoff + 12..eoff + 12 + nlen * 2]
                 .chunks_exact(2)
@@ -178,6 +191,9 @@ fn read_vanilla_wpk() -> Result<Vec<(u64, Vec<u8>)>, String> {
                 .collect::<Vec<_>>(),
         );
         let wid: u64 = name.trim_end_matches(".wem").parse().unwrap_or(0);
+        if doff + dsize > data.len() {
+            continue;
+        }
         out.push((wid, data[doff..doff + dsize].to_vec()));
     }
     Ok(out)
@@ -232,6 +248,9 @@ fn patch_bank_codecs(pcm_ids: &std::collections::HashSet<u64>) -> Result<Vec<u8>
         let tag = &bnk[pos..pos + 4];
         let length = u32::from_le_bytes(bnk[pos + 4..pos + 8].try_into().unwrap()) as usize;
         if tag == b"HIRC" {
+            if pos + 12 > bnk.len() {
+                return Err("bundled events bank truncated (HIRC header)".into());
+            }
             let cnt = u32::from_le_bytes(bnk[pos + 8..pos + 12].try_into().unwrap()) as usize;
             let mut p = pos + 12;
             for _ in 0..cnt {

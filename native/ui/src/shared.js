@@ -2,7 +2,7 @@
 // controlled strings — single copy here so a fix can never drift between pages.
 window.ChudShared = (() => {
   const TAURI = window.__TAURI__?.core;
-  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   // Returns null on missing backend (browser preview) AND on a real invoke
   // failure — callers that must distinguish check `hasBackend`.
   const invoke = async (cmd, args) => {
