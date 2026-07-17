@@ -26,7 +26,6 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::lcu::{self, Auth};
 use crate::safety_manager::{self, InjectionDecision, InjectionDenial, InjectionOp};
-use crate::skins::bridge::BridgeHandle;
 use crate::skins::features::historic::{self, HistoricEntry};
 use crate::skins::features::special;
 use crate::skins::injection::storage::{self, ModStorageService};
@@ -85,7 +84,6 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
         log_warn!("[INJECT] Injection manager not available yet - skipping trigger for {name}");
         return;
     };
-    let bridge = app_state.skins_bridge.lock_safe().clone();
     // Party mode: the connected peers' skins get staged into the overlay too,
     // which is what makes party members see each other's skins in-game. Held
     // here so each injection path can fold the peer mods in.
@@ -119,7 +117,7 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
             let shared = skins.shared.lock_safe();
             (shared.selected_custom_mod.clone(), shared.category_mods.clone(), shared.locked_champ_id.or(shared.hovered_champ_id))
         };
-        let selected_custom_mod = drop_stale_custom_mod(&skins, bridge.as_ref(), selected_custom_mod, champ_id);
+        let selected_custom_mod = drop_stale_custom_mod(&skins, selected_custom_mod, champ_id);
         let custom = selected_custom_mod.unwrap_or_else(|| CustomModSelection {
             skin_id: 0,
             champion_id: champ_id.unwrap_or(0),
@@ -127,7 +125,7 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
             mod_path: String::new(),
             relative_path: String::new(),
         });
-        run_custom_mod_injection(&app, &skins, &injection, bridge.as_ref(), custom, &category_mods, None, champion_name.clone(), &party_mgr).await;
+        run_custom_mod_injection(&app, &skins, &injection, custom, &category_mods, None, None, champion_name.clone(), &party_mgr).await;
         return;
     }
 
@@ -150,6 +148,14 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
         _ => ui_skin_id.unwrap_or(0),
     };
 
+    // Chroma to inject on the UNOWNED path: `resolve_zip("skin_<base>", Some(chroma))`
+    // resolves the chroma's own .fantome. Only when the picked chroma actually
+    // belongs to the hovered base (the owned path forces its chroma via LCU instead).
+    let inject_chroma_id = match (selected_chroma_id, ui_skin_id) {
+        (Some(chroma), Some(base)) if special::is_chroma_of(chroma, base) => Some(chroma),
+        _ => None,
+    };
+
     auto_select_historic_custom_mod(&skins, champ_id, ui_skin_id);
     auto_select_historic_category_mods(&skins);
 
@@ -163,7 +169,7 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     // Injecting it anyway forced the wrong champion's mod into the overlay
     // (observed: a 31s multi-champion build + a crash). Clear it and fall
     // through to the normal skin path.
-    let selected_custom_mod = drop_stale_custom_mod(&skins, bridge.as_ref(), selected_custom_mod, champ_id);
+    let selected_custom_mod = drop_stale_custom_mod(&skins, selected_custom_mod, champ_id);
 
     log_trigger_summary(ticker_id, &name, selected_custom_mod.as_ref(), &category_mods);
 
@@ -171,6 +177,13 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
         || category_mods.font.is_some()
         || category_mods.announcer.is_some()
         || !category_mods.others.is_empty();
+
+    log_info!(
+        "[INJECT-DECISION] ui_skin={ui_skin_id:?} chroma={selected_chroma_id:?} effective={effective_skin_id} inject_chroma={inject_chroma_id:?} owns_ui={} owns_effective={} custom_mod={} other_mods={has_other_mods}",
+        ui_skin_id.is_some_and(|id| owned_skin_ids.contains(&id)),
+        owned_skin_ids.contains(&effective_skin_id),
+        selected_custom_mod.is_some(),
+    );
 
     if let Some(custom_mod) = &selected_custom_mod {
         let target_skin_id = custom_mod.skin_id;
@@ -188,13 +201,18 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
         } else {
             log_info!("[INJECT] Custom mod selected for unowned skin {target_skin_id}, injecting base skin ZIP + custom mod");
         }
-        run_custom_mod_injection(&app, &skins, &injection, bridge.as_ref(), custom_mod.clone(), &category_mods, base_skin_name, champion_name.clone(), &party_mgr).await;
+        run_custom_mod_injection(&app, &skins, &injection, custom_mod.clone(), &category_mods, base_skin_name, None, champion_name.clone(), &party_mgr).await;
         return;
     }
 
     if has_other_mods {
-        let is_owned = ui_skin_id.is_some_and(|id| owned_skin_ids.contains(&id));
-        let base_skin_name = if !is_owned && ui_skin_id != Some(0) { Some(name.clone()) } else { None };
+        // Check the EFFECTIVE pick (the chroma when one is picked, else the base
+        // skin). Owning the base skin does NOT grant its chromas, so a picked
+        // chroma the user doesn't own must inject its own .fantome here — else
+        // this path went mods-only and silently dropped the chroma.
+        let effective_owned = effective_skin_id != 0 && owned_skin_ids.contains(&effective_skin_id);
+        let base_skin_name = if !effective_owned && ui_skin_id != Some(0) { Some(name.clone()) } else { None };
+        let chroma_for_inject = if effective_owned { None } else { inject_chroma_id };
         let dummy = CustomModSelection {
             skin_id: ui_skin_id.unwrap_or(0),
             champion_id: champ_id.unwrap_or(0),
@@ -202,7 +220,7 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
             mod_path: String::new(),
             relative_path: String::new(),
         };
-        run_custom_mod_injection(&app, &skins, &injection, bridge.as_ref(), dummy, &category_mods, base_skin_name, champion_name.clone(), &party_mgr).await;
+        run_custom_mod_injection(&app, &skins, &injection, dummy, &category_mods, base_skin_name, chroma_for_inject, champion_name.clone(), &party_mgr).await;
         return;
     }
 
@@ -224,10 +242,11 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     // and fold them into the overlay for both the owned and unowned paths.
     let party_folders = stage_party_mods(&party_mgr).await;
 
-    // Force owned skins/chromas via LCU (still runs injection afterward so
-    // the overlay is built with any party/category mods).
-    let base_owned = owned_skin_ids.contains(&effective_skin_id)
-        || (ui_skin_id.is_some_and(|id| owned_skin_ids.contains(&id)) && Some(effective_skin_id) != ui_skin_id);
+    // Force owned skins/chromas via LCU (still runs injection afterward so the
+    // overlay is built with any party/category mods). A chroma must be owned in
+    // its OWN right — owning the base skin does not grant its chromas, so an
+    // unowned chroma falls through to `inject_unowned_skin` (injects its .fantome).
+    let base_owned = owned_skin_ids.contains(&effective_skin_id);
     if base_owned {
         // P0-A: re-check immediately before the LCU PATCH (phase/queue can
         // have changed since the entry gate). Denied -> abort the whole
@@ -242,7 +261,7 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     }
 
     // Inject if the user doesn't own the hovered skin.
-    inject_unowned_skin(app, skins, client, auth, injection, bridge, name, champion_name, champ_id, local_cell_id, random_mode_active, party_folders).await;
+    inject_unowned_skin(app, skins, client, auth, injection, name, inject_chroma_id, champion_name, champ_id, local_cell_id, random_mode_active, party_folders).await;
 }
 
 /// Clean the mods dir and (re)stage every connected party peer's skin into
@@ -342,7 +361,6 @@ fn auto_select_historic_custom_mod(skins: &Arc<SkinsState>, champ_id: Option<i64
 /// Returns the selection only while it's still valid.
 fn drop_stale_custom_mod(
     skins: &Arc<SkinsState>,
-    bridge: Option<&BridgeHandle>,
     selection: Option<CustomModSelection>,
     champ_id: Option<i64>,
 ) -> Option<CustomModSelection> {
@@ -358,9 +376,6 @@ fn drop_stale_custom_mod(
         champ_id
     );
     skins.shared.lock_safe().selected_custom_mod = None;
-    if let Some(b) = bridge {
-        b.broadcast_custom_mod_state(false, None, None);
-    }
     None
 }
 
@@ -484,10 +499,10 @@ async fn run_custom_mod_injection(
     app: &AppHandle,
     skins: &Arc<SkinsState>,
     injection: &Arc<InjectionManager>,
-    bridge: Option<&BridgeHandle>,
     custom_mod: CustomModSelection,
     category_mods: &CategoryModSelections,
     base_skin_name: Option<String>,
+    chroma_id: Option<i64>,
     champion_name: String,
     party_mgr: &Option<Arc<crate::skins::party::manager::PartyManager>>,
 ) {
@@ -553,13 +568,18 @@ async fn run_custom_mod_injection(
 
     let champion_id = if custom_mod.champion_id != 0 { Some(custom_mod.champion_id) } else { None };
 
-    // Force the champion's base skin via the LCU when the overlay's assets
-    // are keyed to it: the unowned path, OR a real custom skin mod targeting
-    // the base skin itself. Scoped to `has_custom_skin_folder` so the
-    // category-mods-only `dummy` selection doesn't force a base skin when
-    // the user only added a map/font/announcer.
-    let target_is_base_custom_skin = has_custom_skin_folder && custom_mod.skin_id % 1000 == 0;
-    if base_skin_name.is_some() || target_is_base_custom_skin {
+    // Force the champion's base skin via the LCU when the overlay's assets are
+    // keyed to it: the explicit unowned base path (`base_skin_name`), OR any real
+    // custom SKIN mod whose target isn't an owned skin the user already has
+    // selected — base-slot mods AND unowned-skin mods both need a valid owned
+    // selection loaded for their WAD to apply. This also covers the "custom mod
+    // picked but no normal skin hovered" path (empty `name`), where nothing else
+    // forces a base skin. Owned non-base custom mods keep the user's own pick.
+    // Scoped to `has_custom_skin_folder` so a category-mods-only `dummy`
+    // selection (map/font/announcer) never forces a base skin.
+    let custom_skin_needs_base = has_custom_skin_folder
+        && (custom_mod.skin_id % 1000 == 0 || !skins.shared.lock_safe().owned_skin_ids.contains(&custom_mod.skin_id));
+    if base_skin_name.is_some() || custom_skin_needs_base {
         if let (Some(cid), Some(auth)) = (champion_id, lcu::cached_auth()) {
             // P0-A: gate the LCU PATCH; denied -> abort this injection
             // entirely (never patch, never build).
@@ -572,15 +592,9 @@ async fn run_custom_mod_injection(
                 let shared = skins.shared.lock_safe();
                 (shared.local_cell_id, shared.random_mode_active)
             };
-            force_base_skin(&client, &auth, local_cell, cid * 1000, random_active, bridge).await;
+            force_base_skin(&client, &auth, local_cell, cid * 1000, random_active).await;
         }
     }
-    if let Some(b) = bridge {
-        if has_custom_skin_folder {
-            b.broadcast_custom_mod_state(true, Some(custom_mod.mod_name.clone()).filter(|s| !s.is_empty()), Some(custom_mod.skin_id));
-        }
-    }
-
     log_info!("[INJECT] Injecting mods: {}", labels.join(", "));
 
     spawn_game_end_watcher(skins.clone(), injection.clone());
@@ -594,7 +608,7 @@ async fn run_custom_mod_injection(
         // routing pure extras through a `skin_0` placeholder would trip the
         // base-skin short-circuit and silently drop every extra mod.
         let ok = match &base_skin_name {
-            Some(primary) => injection.inject_skin_immediately(primary, None, Some(&ticker_champion_name), champion_id, &extra_names),
+            Some(primary) => injection.inject_skin_immediately(primary, chroma_id, Some(&ticker_champion_name), champion_id, &extra_names),
             None => injection.inject_mods_only_immediately(&extra_names),
         };
         if ok {
@@ -649,8 +663,8 @@ async fn inject_unowned_skin(
     client: reqwest::Client,
     auth: Auth,
     injection: Arc<InjectionManager>,
-    bridge: Option<BridgeHandle>,
     name: String,
+    chroma_id: Option<i64>,
     champion_name: String,
     champ_id: Option<i64>,
     local_cell_id: Option<i64>,
@@ -667,7 +681,7 @@ async fn inject_unowned_skin(
                 injection.resume_if_suspended();
                 return;
             }
-            force_base_skin(&client, &auth, local_cell_id, base_skin_id, random_mode_active, bridge.as_ref()).await;
+            force_base_skin(&client, &auth, local_cell_id, base_skin_id, random_mode_active).await;
         }
     }
 
@@ -678,7 +692,7 @@ async fn inject_unowned_skin(
     tauri::async_runtime::spawn_blocking(move || {
         // `name` is the user's unowned skin (primary); `party_folders` are the
         // connected peers' skins folded in so party members see each other's.
-        let success = injection.inject_skin_immediately(&name, None, Some(&champion_name), champ_id, &party_folders);
+        let success = injection.inject_skin_immediately(&name, chroma_id, Some(&champion_name), champ_id, &party_folders);
 
         if random_mode_active {
             let mut shared = skins.shared.lock_safe();
@@ -687,9 +701,6 @@ async fn inject_unowned_skin(
             shared.random_mode_active = false;
             drop(shared);
             log_info!("[RANDOM] Random mode cleared after injection");
-            if let Some(b) = &bridge {
-                b.broadcast_random_mode_state(false, None);
-            }
         }
 
         if success {
@@ -762,7 +773,8 @@ async fn find_pick_action(client: &reqwest::Client, auth: &Auth, my_cell: i64) -
 /// Action-based PATCH falling back to `my-selection` (ported from the
 /// repeated try-action-then-my-selection pattern in both
 /// `_force_owned_skin`/`_force_base_skin`).
-async fn force_skin_via_lcu(client: &reqwest::Client, auth: &Auth, my_cell: Option<i64>, target_skin_id: i64) -> bool {
+pub(crate) async fn force_skin_via_lcu(client: &reqwest::Client, auth: &Auth, my_cell: Option<i64>, target_skin_id: i64) -> bool {
+    log_info!("[LCU-FORCE] force_skin_via_lcu target={target_skin_id} cell={my_cell:?}");
     if let Some(my_cell) = my_cell {
         if let Some((action_id, completed)) = find_pick_action(client, auth, my_cell).await {
             if !completed && action_id != 0 && lcu_ext::set_selected_skin(client, auth, action_id, target_skin_id).await {
@@ -822,12 +834,8 @@ async fn force_base_skin(
     local_cell_id: Option<i64>,
     base_skin_id: i64,
     random_mode_active: bool,
-    bridge: Option<&BridgeHandle>,
 ) {
     log_info!("[INJECT] Forcing base skin (skinId={base_skin_id})");
-    if let Some(b) = bridge {
-        b.broadcast_skip_base_skin();
-    }
 
     let t_force0 = std::time::Instant::now();
     let forced = force_skin_via_lcu(client, auth, local_cell_id, base_skin_id).await;

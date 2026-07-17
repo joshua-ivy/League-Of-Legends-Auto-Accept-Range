@@ -9,6 +9,7 @@
 #![allow(dead_code)] // consumed by S3+ (injector/bridge wiring)
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use serde::Serialize;
@@ -81,6 +82,11 @@ pub struct CategoryModEntry {
     pub description: Option<String>,
 }
 
+// The layout only needs creating once per process — `new` runs on every
+// `skins_list_category_mods` call (9x/overlay tick), and re-doing 10x
+// create_dir_all + a read_dir scan every time was a measured hot path.
+static LAYOUT_ENSURED: AtomicBool = AtomicBool::new(false);
+
 /// Service exposing the on-disk mods hierarchy (ported from
 /// `ModStorageService`).
 pub struct ModStorageService {
@@ -102,6 +108,9 @@ impl ModStorageService {
     /// Ensure `mods_root` contains all expected category folders.
     /// Unrecognized root-level folders are only logged, never deleted.
     fn ensure_mods_root_layout(&self) {
+        if LAYOUT_ENSURED.swap(true, Ordering::Relaxed) {
+            return;
+        }
         for category in ROOT_CATEGORIES {
             let _ = std::fs::create_dir_all(self.mods_root.join(category));
         }

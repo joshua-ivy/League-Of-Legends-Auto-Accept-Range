@@ -47,8 +47,7 @@ pub enum DllVerifyError {
 
 /// Exe-relative bundled-resources root, with a dev-mode fallback to the
 /// source tree (`cargo run` works without a bundled build). `paths.rs` only
-/// knows the writable user-data tree, not this read-only one, so this
-/// helper lives here and is reused by `pengu.rs`.
+/// knows the writable user-data tree, not this read-only one.
 pub fn resources_root() -> PathBuf {
     let exe_candidate = std::env::current_exe()
         .ok()
@@ -115,11 +114,6 @@ pub fn ensure_cslol_tools() {
             let _ = std::fs::remove_file(&tmp);
         }
     }
-}
-
-/// Bundled Pengu Loader payload directory: `(exe)/resources/pengu-loader/`.
-pub fn pengu_loader_resource_dir() -> PathBuf {
-    resources_root().join("pengu-loader")
 }
 
 /// Quiet presence check for the required CSLOL tools — no logging, safe to

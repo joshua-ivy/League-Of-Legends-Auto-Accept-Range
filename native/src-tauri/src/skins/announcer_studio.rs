@@ -339,7 +339,7 @@ pub fn build_pack(name: &str, slots: &[SlotAudio], include_milestones: bool) -> 
         "{{\"Name\":\"{}\",\"Author\":\"Chud Announcer Studio\",\"Version\":\"1.0.0\",\"Description\":\"Custom announcer built in Chud\"}}",
         stem.replace('"', "'")
     );
-    let mut write_entry = |zip: &mut zip::ZipWriter<std::fs::File>, path: String, data: &[u8]| -> Result<(), String> {
+    let write_entry = |zip: &mut zip::ZipWriter<std::fs::File>, path: String, data: &[u8]| -> Result<(), String> {
         zip.start_file(path, opts).map_err(|e| e.to_string())?;
         zip.write_all(data).map_err(|e| e.to_string())?;
         Ok(())

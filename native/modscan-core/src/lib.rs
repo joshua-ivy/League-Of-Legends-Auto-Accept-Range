@@ -401,7 +401,8 @@ fn scan_bytes_depth(data: &[u8], depth: usize) -> ScanReport {
         }
 
         // --- 5. Compression-ratio bomb (declared metadata) ---
-        let ratio_bomb = (compressed_size >= 1024 && compressed_size > 0 && size / compressed_size > MAX_COMPRESSION_RATIO)
+        // `>= 1024` already guarantees `compressed_size > 0`, so the division is safe.
+        let ratio_bomb = (compressed_size >= 1024 && size / compressed_size > MAX_COMPRESSION_RATIO)
             || size > MAX_SINGLE_ENTRY_UNCOMPRESSED;
         if ratio_bomb {
             findings.push(Finding::new(

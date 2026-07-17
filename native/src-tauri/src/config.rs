@@ -130,9 +130,10 @@ impl Default for Runes {
     }
 }
 
-/// In-client declutter/ad-remover toggles, consumed by the `CHUD-Declutter` Pengu
-/// plugin over the bridge (`/client-customization`) to inject hiding CSS. Every
-/// option defaults OFF so a fresh install never silently alters the client.
+/// In-client declutter/ad-remover toggles. Retained in config for
+/// forward-compatibility, but no longer delivered to the client: the
+/// `CHUD-Declutter` plugin + its Pengu bridge were removed in the injection-free
+/// rebuild. Every option defaults OFF; nothing consumes these today.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientCustomization {
@@ -184,16 +185,10 @@ impl Default for ClientCustomization {
 /// Chat presence override. When `appear_offline` is on, sets League chat
 /// availability to `offline` and re-asserts it (the client resets availability on
 /// some gameflow events). Off by default. Pure LCU write, no Vanguard surface.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Presence {
     pub appear_offline: bool,
-}
-
-impl Default for Presence {
-    fn default() -> Self {
-        Self { appear_offline: false }
-    }
 }
 
 /// Skin Library (BETA): in-app browser for the upstream skin catalog, served
@@ -254,23 +249,17 @@ impl Default for Library {
 /// `net::allowed_origins`'s built-ins and the hosts implied by the configured
 /// endpoints. Empty by default — for an operator pointing an endpoint somewhere
 /// `net` can't infer (e.g. a self-hosted mirror on a different domain).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Network {
     pub extra_allowed_origins: Vec<String>,
-}
-
-impl Default for Network {
-    fn default() -> Self {
-        Self { extra_allowed_origins: Vec::new() }
-    }
 }
 
 /// Party mode. OFF by default; `PartyManager::enable` refuses to run until the
 /// versioned data-sharing consent is accepted — no relay connection before opt-in.
 /// Transmission details are in `docs/PRIVACY-PARTY.md`; bumping the consent
 /// version in `party::manager` re-gates everyone when the disclosure changes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Party {
     /// User's persisted on/off choice. Consent is checked independently —
@@ -282,12 +271,6 @@ pub struct Party {
     /// Auto-download announcer packs peers advertise (verified against the
     /// Library catalog first). Off by default — needs its own opt-in.
     pub auto_download_peer_announcers: bool,
-}
-
-impl Default for Party {
-    fn default() -> Self {
-        Self { enabled: false, consent_version: 0, auto_download_peer_announcers: false }
-    }
 }
 
 /// Anonymous usage telemetry. ON by default. Sends only a per-UTC-day rotating

@@ -45,8 +45,6 @@ use tauri::{AppHandle, Manager};
 use sha2::{Digest, Sha256};
 
 use crate::lcu::{self, Auth};
-use crate::skins::bridge::protocol::now_ms;
-use crate::skins::bridge::BridgeHandle;
 use crate::skins::injection::zips;
 use crate::skins::lcu_ext;
 use crate::skins::paths;
@@ -140,6 +138,7 @@ struct Inner {
     /// id) actually broadcast last — recorded only after a confirmed send, and
     /// keyed on the resolved hash (not the mod path) so a transient hash
     /// failure re-sends once the file is readable.
+    #[allow(clippy::type_complexity)]
     last_broadcast: Option<(i64, i64, Option<i64>, Option<String>, Option<String>)>,
     /// Library mod-ids of peer announcers we've already started (or
     /// finished) downloading this session — dedups the download trigger
@@ -161,10 +160,6 @@ pub struct PartyManager {
     /// For AppState/config access (library install records — announcer sync)
     /// and user-facing notifications.
     app: AppHandle,
-    /// Held so relay member-list updates (arriving on a background task) can
-    /// push a fresh `party-state` broadcast without going through a
-    /// `#[tauri::command]` round-trip — see `handle_members_update`.
-    bridge: BridgeHandle,
     http_client: reqwest::Client,
     relay_url: String,
     /// Bumped on every `enable()`/`disable()` so a background loop spawned
@@ -175,16 +170,14 @@ pub struct PartyManager {
 }
 
 impl PartyManager {
-    /// Constructed once in `lib.rs`'s `setup()`, after the bridge server is
-    /// up (so `bridge` can push proactive `party-state` updates). `relay_url`
-    /// resolution: `CHUD_RELAY_URL` env wins, then config, then the default.
-    pub fn new(app: &AppHandle, skins: Arc<SkinsState>, bridge: BridgeHandle) -> Arc<Self> {
+    /// Constructed once in `lib.rs`'s `setup()`. `relay_url` resolution:
+    /// `CHUD_RELAY_URL` env wins, then config, then the default.
+    pub fn new(app: &AppHandle, skins: Arc<SkinsState>) -> Arc<Self> {
         let relay_url = resolve_relay_url(app);
         let http_client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
         Arc::new(Self {
             skins,
             app: app.clone(),
-            bridge,
             http_client,
             relay_url,
             generation: AtomicU64::new(0),
@@ -314,7 +307,6 @@ impl PartyManager {
         self.spawn_background_loops(generation);
 
         log_info!("[PARTY] Party mode enabled. Token: {}...", &token_str[..token_str.len().min(20)]);
-        self.broadcast_state();
         Ok(token_str)
     }
 
@@ -342,7 +334,6 @@ impl PartyManager {
         }
 
         log_info!("[PARTY] Party mode disabled");
-        self.broadcast_state();
     }
 
     /// `PartyManager.add_peer` — join another player's room by pasting their
@@ -350,7 +341,6 @@ impl PartyManager {
     /// state broadcast always follows, success or failure.
     pub async fn add_peer(self: &Arc<Self>, token_str: &str) -> Result<(), String> {
         let result = self.add_peer_inner(token_str).await;
-        self.broadcast_state();
         result
     }
 
@@ -417,7 +407,6 @@ impl PartyManager {
             inner.peers.remove(&member_id);
         }
         log_info!("[PARTY] Removed peer {member_id}");
-        self.broadcast_state();
     }
 
     /// `PartyState.to_dict()` — the exact shape `party-state`/`party-get-state`
@@ -471,21 +460,12 @@ impl PartyManager {
         })
     }
 
-    /// Push a fresh `party-state` broadcast (ported from `PartyUIBridge.
-    /// _broadcast_state`/`PartyManager._notify_state_change`'s effect).
-    fn broadcast_state(&self) {
-        let mut payload = self.get_state();
-        payload["type"] = json!("party-state");
-        payload["timestamp"] = json!(now_ms());
-        self.bridge.broadcast_json(payload);
-    }
-
     // ─── Relay room connect/callback ───────────────────────────────────
 
     /// Connect to `room_key`'s relay room, announce ourselves (display name
     /// + ephemeral pubkey — no summoner id, P0-F), and stash the resulting
-    /// `PartyRelay` handle. Returns `false` (never errors) on a failed
-    /// connect — caller logs and continues with party mode "limited".
+    ///   `PartyRelay` handle. Returns `false` (never errors) on a failed
+    ///   connect — caller logs and continues with party mode "limited".
     async fn connect_room(self: &Arc<Self>, room_key: String, display_name: String) -> bool {
         let pubkey_hex = {
             let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -631,7 +611,6 @@ impl PartyManager {
             }
         }
 
-        self.broadcast_state();
     }
 
     /// Download + convert a peer's Library announcer in the background (once
@@ -798,7 +777,6 @@ impl PartyManager {
             old.disconnect();
         }
         self.connect_room(room_key, display_name).await;
-        self.broadcast_state();
     }
 
     /// Updates each peer's `in_lobby` flag every `LOBBY_CHECK_INTERVAL`. As
@@ -1020,6 +998,11 @@ impl PartyManager {
                 }
             }
 
+            log_info!(
+                "[PARTY] Peer {} pick accepted: champ={champion_id} skin={skin_id} chroma={chroma_id:?} custom={}",
+                member.name,
+                custom_mod_relative_path.as_deref().unwrap_or("none")
+            );
             skins.push(PartySkinData {
                 member_id: member.member_id,
                 name: member.name.clone(),

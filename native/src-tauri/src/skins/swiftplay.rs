@@ -33,6 +33,7 @@ use crate::{AppState, LockExt};
 
 /// Per-process Swiftplay bookkeeping that used to live as instance fields on
 /// Python's `SwiftplayHandler` singleton — a process-wide static is the direct equivalent.
+#[derive(Default)]
 struct SwiftplayRuntime {
     injection_triggered: bool,
     overlay_done: bool,
@@ -41,12 +42,6 @@ struct SwiftplayRuntime {
     /// semantics from `trigger_swiftplay_injection` are S6 territory).
     last_injected_tracking: HashMap<i64, i64>,
     user_changed_since_inject: HashSet<i64>,
-}
-
-impl Default for SwiftplayRuntime {
-    fn default() -> Self {
-        Self { injection_triggered: false, overlay_done: false, last_injected_tracking: HashMap::new(), user_changed_since_inject: HashSet::new() }
-    }
 }
 
 static RUNTIME: OnceLock<Mutex<SwiftplayRuntime>> = OnceLock::new();

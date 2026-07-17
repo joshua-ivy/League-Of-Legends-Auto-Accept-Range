@@ -62,17 +62,12 @@ pub struct AppState {
     /// The phase actor's handle, set once during `setup()`. `lcu_ws.rs` reads
     /// `input_tx` to fan events into it. `None` only before `setup()` spawns it.
     pub skins_phase: Mutex<Option<skins::phase::PhaseHandle>>,
-    /// The skins bridge server's handle, set once during `setup()`. Holders
-    /// clone it and call its `broadcast_*` methods to push state to the Pengu
-    /// Loader plugins. `None` only before `setup()` spawns it.
-    pub skins_bridge: Mutex<Option<skins::bridge::BridgeHandle>>,
     /// The injection manager, set once during `setup()`; pulled from here (via
     /// the app handle) to run an injection at the loadout deadline. `None` only
     /// before `setup()` builds it.
     pub skins_injection: Mutex<Option<Arc<skins::injection::InjectionManager>>>,
-    /// The party mode manager, set once during `setup()` after the bridge,
-    /// since it holds a `BridgeHandle` clone to push `party-state` updates
-    /// proactively. `None` only before `setup()` builds it.
+    /// The party mode manager, set once during `setup()`. `None` only before
+    /// `setup()` builds it.
     pub skins_party: Mutex<Option<Arc<skins::party::manager::PartyManager>>>,
 }
 
@@ -434,15 +429,13 @@ fn get_diagnostics(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
 // ============================================================
 // Skins control panel — see `docs/SKINS_PORT.md` §5. These commands are thin
 // wrappers over the skins subsystem; none re-derive logic that lives in
-// `skins::*`. Party's `party-state` broadcast goes out over the in-client
-// bridge WebSocket to the Pengu Loader plugins, NOT to this Tauri webview, so
-// there is no push event here — the front-end polls `skins_party_get_state`.
+// `skins::*`. Party state has no push event to the Tauri webview — the
+// front-end polls `skins_party_get_state`.
 // ============================================================
 
 /// Disk/process checks shared by `skins_snapshot` and `skins_diagnostics` —
 /// computed once per call so the two never disagree on the same request.
 struct SkinsStatusChecks {
-    pengu_active: bool,
     skins_downloaded: bool,
     hashes_ready: bool,
     tools_available: bool,
@@ -457,7 +450,6 @@ fn skins_status_checks() -> SkinsStatusChecks {
     let tools_dir = skins::injection::tools::cslol_tools_dir();
     let dll = skins::injection::tools::verify_cslol_dll(&tools_dir);
     SkinsStatusChecks {
-        pengu_active: skins::pengu::is_active(),
         skins_downloaded: skins::downloads::skins_present(&skins::paths::skins_dir()),
         hashes_ready: tools_dir.join("hashes.game.txt").exists(),
         tools_available: skins::injection::tools::check_tools_available(&tools_dir),
@@ -471,10 +463,8 @@ fn skins_status_checks() -> SkinsStatusChecks {
     }
 }
 
-fn skins_diagnostics_value(checks: &SkinsStatusChecks, bridge_port: Option<u16>) -> serde_json::Value {
+fn skins_diagnostics_value(checks: &SkinsStatusChecks) -> serde_json::Value {
     json!({
-        "bridgePort": bridge_port,
-        "penguActive": checks.pengu_active,
         "toolsAvailable": checks.tools_available,
         "dllValid": checks.dll_valid,
         "dllReason": checks.dll_reason,
@@ -517,10 +507,41 @@ fn injection_policy_json(state: &AppState) -> serde_json::Value {
 /// The Skins page's full state payload — same "one snapshot fn behind a thin
 /// command" shape `snapshot()`/`get_state` already use for the dashboard.
 fn skins_snapshot(state: &AppState) -> serde_json::Value {
-    let cfg = state.config.lock_safe().skins.clone();
-    let ack_version = state.config.lock_safe().safety.skins_ack_version;
-    let party_cfg = state.config.lock_safe().party.clone();
-    let bridge_port = state.skins_bridge.lock_safe().as_ref().map(|b| b.port());
+    let (cfg, ack_version, party_cfg) = {
+        let c = state.config.lock_safe();
+        (c.skins.clone(), c.safety.skins_ack_version, c.party.clone())
+    };
+    // Current champ-select champion (locked wins over hover) + the active
+    // per-game pick — so the app/overlay picker can show "pick a skin for THIS
+    // game" without any client injection.
+    let (current_champ, current_pick, current_chroma, current_random, current_custom, historic_on, cat_map, cat_font, cat_announcer, cat_others, historic_restored) = {
+        let s = state.skins.shared.lock_safe();
+        (
+            s.locked_champ_id.or(s.hovered_champ_id),
+            s.last_hovered_skin_id,
+            s.selected_chroma_id,
+            if s.random_mode_active { s.random_skin_id } else { None },
+            s.selected_custom_mod.as_ref().map(|m| m.mod_name.clone()),
+            s.historic_enabled,
+            // Only echo a slot if its mod file still exists on disk — a mod
+            // deleted out from under the app must not leave a ghost selection
+            // the UI can't clear (read-only check: nothing is mutated/saved here).
+            s.category_mods.map.as_ref().filter(|m| std::path::Path::new(&m.mod_path).exists()).map(|m| m.mod_name.clone()),
+            s.category_mods.font.as_ref().filter(|m| std::path::Path::new(&m.mod_path).exists()).map(|m| m.mod_name.clone()),
+            s.category_mods.announcer.as_ref().filter(|m| std::path::Path::new(&m.mod_path).exists()).map(|m| m.mod_name.clone()),
+            s.category_mods.others.iter().filter(|m| std::path::Path::new(&m.mod_path).exists()).map(|m| m.relative_path.clone()).collect::<Vec<_>>(),
+            // Skin id historic actually restored this game (for the overlay to
+            // highlight + show its "restored your last pick" banner).
+            if s.historic_mode_active {
+                match &s.historic_selection {
+                    Some(skins::state::HistoricSelection::SkinId(id)) => Some(*id),
+                    _ => None,
+                }
+            } else {
+                None
+            },
+        )
+    };
     let checks = skins_status_checks();
     let party = match state.skins_party.lock_safe().as_ref() {
         Some(p) => p.get_state(),
@@ -539,8 +560,6 @@ fn skins_snapshot(state: &AppState) -> serde_json::Value {
         "ackVersion": ack_version,
         "ackRequiredVersion": safety_manager::CURRENT_SKINS_ACK_VERSION,
         "policy": injection_policy_json(state),
-        "bridgePort": bridge_port,
-        "penguActive": checks.pengu_active,
         "skinsDownloaded": checks.skins_downloaded,
         "hashesReady": checks.hashes_ready,
         "leaguePath": cfg.league_path,
@@ -548,7 +567,15 @@ fn skins_snapshot(state: &AppState) -> serde_json::Value {
         "autoResumeSecs": cfg.monitor_auto_resume_timeout_secs,
         "autoDownload": cfg.auto_download_skins,
         "party": party,
-        "diagnostics": skins_diagnostics_value(&checks, bridge_port),
+        "currentChampId": current_champ,
+        "currentPickSkinId": current_pick,
+        "currentChromaId": current_chroma,
+        "currentRandomSkinId": current_random,
+        "currentCustomMod": current_custom,
+        "historicEnabled": historic_on,
+        "historicRestoredSkinId": historic_restored,
+        "categoryMods": { "map": cat_map, "font": cat_font, "announcer": cat_announcer, "others": cat_others },
+        "diagnostics": skins_diagnostics_value(&checks),
     })
 }
 
@@ -655,43 +682,9 @@ fn skins_download(force: bool, app: AppHandle) {
     });
 }
 
-/// Activate the bundled Pengu Loader against the resolved League install path
-/// (the configured `league_path`, falling back to LCU auto-detection via
-/// `lcu_ext::resolve_game_dir`). Blocking (shells out to Pengu Loader's CLI) but
-/// Tauri runs non-`async` commands on its own blocking thread pool, so this
-/// never stalls the webview.
-#[tauri::command]
-fn skins_activate_pengu(state: tauri::State<Arc<AppState>>) -> Result<serde_json::Value, String> {
-    // Pengu Loader modifies the League install, which Windows only permits with
-    // admin rights — a non-elevated launch fails with "requires elevation" (os
-    // error 740), which the UI used to surface as a misleading error. Gate here
-    // with a clear, actionable message instead.
-    if !winutil::is_admin() {
-        return Err("Chud needs to run as administrator to set up skins. Pengu Loader modifies your League install, which Windows only allows with admin rights (skin injection needs admin too). Close Chud, right-click it, choose \"Run as administrator,\" then click Activate again.".to_string());
-    }
-
-    let configured = state.config.lock_safe().skins.league_path.clone();
-    let league_path = if !configured.trim().is_empty() {
-        Some(configured)
-    } else {
-        skins::lcu_ext::resolve_game_dir().map(|p| p.to_string_lossy().into_owned())
-    };
-    let res = skins::pengu::activate_on_start(league_path.as_deref());
-    if res.activated {
-        Ok(json!({
-            "ok": true,
-            "leaguePath": league_path,
-            "restartNeeded": res.restart_needed,
-            "restarted": res.restarted,
-        }))
-    } else {
-        Err("Couldn't activate Pengu Loader. Make sure League of Legends is installed and, if needed, set its path in Settings, then try again.".to_string())
-    }
-}
-
 /// Persist the Skins master enable/disable flag. Enforced: the safety policy
 /// denies every injection entrypoint with `DISABLED` while this is off — the
-/// phase actor/bridge/ticker still run and idle, but nothing they trigger can execute.
+/// phase actor/ticker still run and idle, but nothing they trigger can execute.
 #[tauri::command]
 fn skins_set_enabled(enabled: bool, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     {
@@ -765,6 +758,554 @@ fn skins_set_favorite(champ_id: i64, skin_id: Option<i64>, state: tauri::State<A
     let obj: serde_json::Map<String, serde_json::Value> =
         map.iter().map(|(c, s)| (c.to_string(), json!(s))).collect();
     serde_json::Value::Object(obj)
+}
+
+/// Is a live LCU champ-select PATCH (force skin/chroma selection) permitted right
+/// now? The overlay pick/preview commands write to the League client, so they must
+/// clear the same P0-A safety gate every injection side effect does — otherwise a
+/// disabled master switch, missing consent, or the ranked kill-switch could still
+/// be bypassed by a swatch click or chroma hover.
+fn lcu_patch_allowed(state: &AppState) -> bool {
+    matches!(
+        safety_manager::evaluate_injection_policy(state, safety_manager::InjectionOp::LcuPatch),
+        safety_manager::InjectionDecision::Allowed(_)
+    )
+}
+
+/// Manual per-game skin pick from the Chud app/overlay — the injection-free
+/// replacement for the old in-client wheel's hover message. Sets the
+/// `last_hovered_*` fields by skin ID directly (no DOM scrape / fuzzy name
+/// match). `chroma_id` optionally sets the chroma; `skin_name` is display-only.
+/// The loadout ticker reads these at the injection deadline exactly as before.
+#[tauri::command]
+async fn skins_pick_skin(
+    skin_id: i64,
+    chroma_id: Option<i64>,
+    skin_name: Option<String>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    use skins::slog::log_info;
+    log_info!("[PICK] commit skin_id={skin_id} chroma_id={chroma_id:?}");
+    let local_cell_id = {
+        let mut shared = state.skins.shared.lock_safe();
+        shared.last_hovered_skin_id = Some(skin_id);
+        shared.last_hovered_skin_slug = Some(format!("skin_{skin_id}"));
+        shared.last_hovered_skin_key = skin_name.or_else(|| Some(format!("skin_{skin_id}")));
+        shared.selected_chroma_id = chroma_id;
+        // A manual pick overrides historic mode this game — historic has top
+        // priority in `resolve_injection_name`, so without this the manual choice
+        // would be silently ignored while the toggle stays on for next game.
+        shared.historic_mode_active = false;
+        shared.historic_selection = None;
+        shared.manual_pick_this_session = true;
+        shared.local_cell_id
+    };
+    // Live-preview the pick in the League champ-select 3D model so the user sees
+    // the exact skin/chroma colour before locking. Owned skins/chromas only — the
+    // client can't preview unowned content, so the PATCH just no-ops there while
+    // in-game injection still applies. Gated by the safety policy: no live client
+    // write when skins are disabled / consent missing / ranked kill-switch active.
+    if lcu_patch_allowed(state.inner()) {
+        if let Some(auth) = lcu::cached_auth() {
+            let client = lcu::build_lcu_client(4.0);
+            let target = chroma_id.unwrap_or(skin_id);
+            skins::trigger::force_skin_via_lcu(&client, &auth, local_cell_id, target).await;
+        }
+    } else {
+        log_info!("[SAFETY] pick LCU preview skipped — injection policy denied");
+    }
+    Ok(())
+}
+
+/// Preview-only: force the champ-select 3D model to a skin/chroma WITHOUT
+/// committing the per-game pick, so the overlay can live-preview on hover as the
+/// user sweeps across chroma swatches. Owned content only (client no-ops unowned).
+#[tauri::command]
+async fn skins_preview_skin(
+    skin_id: i64,
+    chroma_id: Option<i64>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    use skins::slog::log_info;
+    log_info!("[PREVIEW] hover skin_id={skin_id} chroma_id={chroma_id:?}");
+    if !lcu_patch_allowed(state.inner()) {
+        return Ok(()); // safety gate: no live client write when injection is disallowed
+    }
+    let local_cell_id = { state.skins.shared.lock_safe().local_cell_id };
+    if let Some(auth) = lcu::cached_auth() {
+        let client = lcu::build_lcu_client(4.0);
+        let target = chroma_id.unwrap_or(skin_id);
+        skins::trigger::force_skin_via_lcu(&client, &auth, local_cell_id, target).await;
+    }
+    Ok(())
+}
+
+/// Clear a manual per-game pick, falling back to the champion's favorite (or
+/// base). Mirrors the wheel's dismiss path.
+#[tauri::command]
+fn skins_clear_pick(state: tauri::State<Arc<AppState>>) {
+    let mut shared = state.skins.shared.lock_safe();
+    shared.last_hovered_skin_id = None;
+    shared.last_hovered_skin_slug = None;
+    shared.last_hovered_skin_key = None;
+    shared.selected_chroma_id = None;
+    shared.selected_form_path = None;
+    // Also cancel a historic restore for this game (the overlay's "Undo" on the
+    // historic banner routes here); the `historic_enabled` toggle stays on so
+    // the next champ still restores.
+    shared.historic_mode_active = false;
+    shared.historic_selection = None;
+}
+
+/// List a champion's full skin + chroma catalog (owned AND unowned) from the
+/// LCU, each tagged `owned`. This is the data the Chud-app/overlay skin picker
+/// renders — the injection-free replacement for the wheel scraping the client's
+/// champ-select carousel.
+#[tauri::command]
+async fn skins_list_champion_skins(
+    champion_id: i64,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let Some(auth) = lcu::cached_auth() else {
+        return Err("League client not connected".into());
+    };
+    let client = lcu::build_lcu_client(6.0);
+    let cache = match skins::lcu_ext::scrape_champion_skins(&client, &auth, champion_id).await {
+        Some(c) => c,
+        None => {
+            lcu::invalidate_auth();
+            return Err("Could not load skins for this champion".into());
+        }
+    };
+    let owned = state.skins.shared.lock_safe().owned_skin_ids.clone();
+    let skins_dir = skins::paths::skins_dir();
+    let skins: Vec<serde_json::Value> = cache
+        .skins
+        .iter()
+        .map(|s| {
+            // `downloaded` mirrors `favorites::catalog` — an unowned skin needs
+            // its ZIP on disk to inject; owned skins are forced natively via LCU.
+            let downloaded = skins_dir.join(champion_id.to_string()).join(s.skin_id.to_string()).exists();
+            json!({
+                "skinId": s.skin_id,
+                "skinName": s.skin_name,
+                "owned": owned.contains(&s.skin_id),
+                "downloaded": downloaded,
+                "chromas": s.chroma_details.iter().map(|c| json!({"id": c.id, "name": c.name, "colors": c.colors})).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "championId": cache.champion_id,
+        "championName": cache.champion_name,
+        "skins": skins,
+    }))
+}
+
+/// Roll a random skin for the champion — restricted to skins the user can
+/// actually inject (owned → native LCU, or downloaded → cslol), and each skin's
+/// chroma pool trimmed the same way, so the dice never lands on something with
+/// no .fantome. Sets random mode; the engine injects the roll at game start.
+#[tauri::command]
+async fn skins_roll_random(
+    champion_id: i64,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    use skins::slog::log_info;
+    let Some(auth) = lcu::cached_auth() else {
+        return Err("League client not connected".into());
+    };
+    let client = lcu::build_lcu_client(6.0);
+    let mut cache = match skins::lcu_ext::scrape_champion_skins(&client, &auth, champion_id).await {
+        Some(c) => c,
+        None => {
+            lcu::invalidate_auth();
+            return Err("Could not load skins for this champion".into());
+        }
+    };
+    let owned = state.skins.shared.lock_safe().owned_skin_ids.clone();
+    let skins_dir = skins::paths::skins_dir();
+    let champ_root = skins_dir.join(champion_id.to_string());
+    let injectable = |skin_id: i64, chroma: Option<i64>| -> bool {
+        owned.contains(&skin_id)
+            || match chroma {
+                Some(c) => champ_root.join(skin_id.to_string()).join(c.to_string()).exists(),
+                None => champ_root.join(skin_id.to_string()).exists(),
+            }
+    };
+    cache.skins.retain(|s| injectable(s.skin_id, None));
+    for s in &mut cache.skins {
+        let sid = s.skin_id;
+        s.chroma_details.retain(|c| owned.contains(&c.id) || champ_root.join(sid.to_string()).join(c.id.to_string()).exists());
+    }
+    let (name, id) = {
+        let mut shared = state.skins.shared.lock_safe();
+        if skins::features::random::start_randomization(&mut shared, &cache) {
+            shared.manual_pick_this_session = true; // a roll is a manual choice too
+            (shared.random_skin_name.clone(), shared.random_skin_id)
+        } else {
+            (None, None)
+        }
+    };
+    log_info!("[RANDOM] roll champ={champion_id} pool={} -> id={id:?} name={name:?}", cache.skins.len());
+    match id {
+        Some(i) => Ok(json!({ "skinId": i, "skinName": name })),
+        None => Err("No injectable skins to roll — download or own some for this champion first".into()),
+    }
+}
+
+/// Turn random mode off (also clears any rolled skin).
+#[tauri::command]
+fn skins_cancel_random(state: tauri::State<Arc<AppState>>) {
+    use skins::slog::log_info;
+    log_info!("[RANDOM] cancel");
+    skins::features::random::cancel_randomization(&mut state.skins.shared.lock_safe());
+}
+
+/// List the user's own skin mods (`.fantome`/`.zip`/folder) for a champion,
+/// from `%LOCALAPPDATA%\Chud\mods\skins\<skinId>\`.
+#[tauri::command]
+fn skins_list_custom_mods(champion_id: i64) -> Result<serde_json::Value, String> {
+    use skins::slog::log_info;
+    let storage = skins::injection::storage::ModStorageService::new(skins::paths::mods_dir());
+    let root = storage.mods_root().to_path_buf();
+    let entries = storage.list_mods_for_champion(champion_id);
+    log_info!("[CUSTOM] list champ={champion_id} -> {} mod(s)", entries.len());
+    let mods: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            let rel = e.path.strip_prefix(&root).unwrap_or(&e.path).to_string_lossy().replace('\\', "/");
+            json!({
+                "skinId": e.skin_id,
+                "modName": e.mod_name,
+                "relativePath": rel,
+                "description": e.description,
+                "hasPreview": custom_mod_preview_path(&e.path).is_some(),
+            })
+        })
+        .collect();
+    Ok(json!({ "championId": champion_id, "mods": mods }))
+}
+
+/// Find a preview image for a custom mod: a `.png/.jpg/.jpeg/.webp` sitting next
+/// to a single-file mod (same stem) or inside a mod folder (`preview.*` or any
+/// root-level image). `.fantome` files carry no image, so this is the only way
+/// to show a custom skin's real look — the user drops the image beside the mod.
+fn custom_mod_preview_path(mod_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    const EXTS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
+    let is_img = |p: &std::path::Path| {
+        p.extension()
+            .and_then(|x| x.to_str())
+            .map(|x| EXTS.contains(&x.to_ascii_lowercase().as_str()))
+            .unwrap_or(false)
+    };
+    if mod_path.is_dir() {
+        for e in EXTS {
+            let p = mod_path.join(format!("preview.{e}"));
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        std::fs::read_dir(mod_path).ok()?.flatten().map(|d| d.path()).find(|p| is_img(p))
+    } else {
+        EXTS.iter().map(|e| mod_path.with_extension(e)).find(|p| p.exists())
+    }
+}
+
+/// Return a custom mod's sidecar preview image as a `data:` URL (base64), or
+/// `null` if it has none / is too large. Called on hover, cached client-side.
+#[tauri::command]
+fn skins_custom_mod_preview(champion_id: i64, mod_id: String) -> Result<Option<String>, String> {
+    use base64::Engine as _;
+    let storage = skins::injection::storage::ModStorageService::new(skins::paths::mods_dir());
+    let root = storage.mods_root().to_path_buf();
+    let rel_of = |p: &std::path::Path| p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+    let Some(entry) = storage
+        .list_mods_for_champion(champion_id)
+        .into_iter()
+        .find(|e| e.mod_name == mod_id || rel_of(&e.path) == mod_id)
+    else {
+        return Ok(None);
+    };
+    let Some(img) = custom_mod_preview_path(&entry.path) else { return Ok(None) };
+    let meta = std::fs::metadata(&img).map_err(|e| e.to_string())?;
+    if meta.len() > 6_000_000 {
+        return Ok(None); // too big to inline as a data URL
+    }
+    let bytes = std::fs::read(&img).map_err(|e| e.to_string())?;
+    let mime = match img.extension().and_then(|x| x.to_str()).map(|x| x.to_ascii_lowercase()).as_deref() {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(Some(format!("data:{mime};base64,{b64}")))
+}
+
+/// Select one of the user's custom skin mods for this game — extracts it into
+/// the injection staging dir (same as the old bridge path) and records the pick.
+#[tauri::command]
+fn skins_pick_custom_mod(
+    champion_id: i64,
+    mod_id: String,
+    state: tauri::State<Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    use skins::slog::log_info;
+    let storage = skins::injection::storage::ModStorageService::new(skins::paths::mods_dir());
+    let root = storage.mods_root().to_path_buf();
+    let rel_of = |p: &std::path::Path| p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+    let Some(entry) = storage
+        .list_mods_for_champion(champion_id)
+        .into_iter()
+        .find(|e| e.mod_name == mod_id || rel_of(&e.path) == mod_id)
+    else {
+        return Err("Custom mod not found".into());
+    };
+
+    let source = entry.path.clone();
+    let mod_folder_name = if source.is_dir() { source.file_name() } else { source.file_stem() }
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mod".to_string());
+    let dest = skins::paths::injection_mods_dir().join(&mod_folder_name);
+    if dest.exists() {
+        skins::injection::zips::safe_remove_entry(&dest);
+    }
+    let cache_dir = skins::paths::injection_extract_cache_dir();
+    if let Err(e) = skins::injection::zips::link_or_extract(&source, &dest, &cache_dir) {
+        return Err(format!("Failed to extract custom mod: {e}"));
+    }
+    let relative_path = rel_of(&source);
+    {
+        let mut shared = state.skins.shared.lock_safe();
+        if shared.historic_mode_active {
+            shared.historic_mode_active = false;
+            shared.historic_selection = None;
+        }
+        shared.manual_pick_this_session = true;
+        shared.selected_custom_mod = Some(skins::state::CustomModSelection {
+            skin_id: entry.skin_id,
+            champion_id,
+            mod_name: mod_folder_name.clone(),
+            mod_path: source.to_string_lossy().into_owned(),
+            relative_path,
+        });
+    }
+    log_info!("[CUSTOM] pick champ={champion_id} skin={} mod={mod_folder_name}", entry.skin_id);
+    Ok(json!({ "ok": true, "modName": mod_folder_name, "skinId": entry.skin_id }))
+}
+
+/// Clear a selected custom mod (falls back to the normal skin/favorite path).
+#[tauri::command]
+fn skins_clear_custom_mod(state: tauri::State<Arc<AppState>>) {
+    use skins::slog::log_info;
+    log_info!("[CUSTOM] clear");
+    state.skins.shared.lock_safe().selected_custom_mod = None;
+}
+
+/// Resolve a local custom mod's name to its Library (R2) preview image, cached
+/// to disk so repeat hovers never hit the network. A `.fantome` carries no image,
+/// but mods from the Library have a preview on R2 — matched via the `chud-skins`
+/// catalog. Returns a `data:` URL (from `%LOCALAPPDATA%\Chud\thumbs\` on a hit,
+/// or freshly downloaded + cached on a miss); `null` if no catalog match.
+#[tauri::command]
+async fn skins_custom_mod_thumb(
+    champion_id: i64,
+    mod_name: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    use base64::Engine as _;
+    use skins::slog::log_info;
+
+    let cache_dir = skins::paths::skins_dir().parent().map(|p| p.join("thumbs")).ok_or("no cache dir")?;
+    let safe: String = mod_name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
+    let to_data_url = |bytes: &[u8], ext: &str| {
+        let mime = match ext { "jpg" | "jpeg" => "image/jpeg", "webp" => "image/webp", _ => "image/png" };
+        format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+    };
+
+    // Disk-cache hit — no network at all.
+    for ext in ["png", "jpg", "jpeg", "webp"] {
+        if let Ok(bytes) = std::fs::read(cache_dir.join(format!("{safe}.{ext}"))) {
+            return Ok(Some(to_data_url(&bytes, ext)));
+        }
+    }
+
+    // Miss: resolve name -> R2 thumb URL via the catalog, then download + cache.
+    let (endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        (c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
+    let http = net::build_external_client(15.0, allowed.clone());
+    let mut u = reqwest::Url::parse(&format!("{}/catalog", endpoint.trim_end_matches('/'))).map_err(|e| e.to_string())?;
+    u.query_pairs_mut()
+        .append_pair("champion", &champion_id.to_string())
+        .append_pair("search", &mod_name)
+        .append_pair("pageSize", "60");
+    let val = net::get_json_checked(&http, u.as_str(), &allowed, 4 * 1024 * 1024).await?;
+    let want = mod_name.trim().to_lowercase();
+    let name_of = |m: &serde_json::Value| m.get("name").and_then(|n| n.as_str()).unwrap_or("").trim().to_lowercase();
+    let mods = val.get("mods").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+    let thumb_url = mods
+        .iter()
+        .find(|m| name_of(m) == want)
+        .or_else(|| mods.iter().find(|m| { let n = name_of(m); !n.is_empty() && (n.contains(&want) || want.contains(&n)) }))
+        .and_then(|m| m.get("thumb").and_then(|t| t.as_str()).map(String::from));
+    let Some(thumb_url) = thumb_url else {
+        log_info!("[CUSTOM] thumb champ={champion_id} name='{mod_name}' -> no catalog match");
+        return Ok(None);
+    };
+    let ext = thumb_url.rsplit('.').next().map(|e| e.to_ascii_lowercase()).filter(|e| ["png", "jpg", "jpeg", "webp"].contains(&e.as_str())).unwrap_or_else(|| "png".into());
+    let bytes = net::get_bytes_checked(&http, &thumb_url, &allowed, 8 * 1024 * 1024).await?;
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let _ = std::fs::write(cache_dir.join(format!("{safe}.{ext}")), &bytes);
+    log_info!("[CUSTOM] thumb champ={champion_id} name='{mod_name}' -> cached {} bytes", bytes.len());
+    Ok(Some(to_data_url(&bytes, &ext)))
+}
+
+// ── Category mods (maps / fonts / announcers / ui / vfx / sfx / voiceover /
+// loading_screen / others) — champion-independent global mods, picked from the
+// overlay. map/font/announcer are single-select slots; everything else stacks
+// in the `others` bucket. The engine already injects `category_mods`. ──────────
+
+/// List the user's installed mods for a category (from `%LOCALAPPDATA%\Chud\mods\<category>\`).
+#[tauri::command]
+fn skins_list_category_mods(category: String) -> Result<serde_json::Value, String> {
+    use skins::slog::log_info;
+    let storage = skins::injection::storage::ModStorageService::new(skins::paths::mods_dir());
+    let entries = storage.list_mods_for_category(&category);
+    log_info!("[CATEGORY] list {category} -> {} mod(s)", entries.len());
+    let mods: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| json!({ "id": e.id, "name": e.name, "relativePath": e.path, "description": e.description }))
+        .collect();
+    Ok(json!({ "category": category, "mods": mods }))
+}
+
+/// Select a category mod for this game. Single-select for map/font/announcer;
+/// all other categories stack in `others` (multi-select).
+#[tauri::command]
+fn skins_pick_category_mod(
+    category: String,
+    mod_id: String,
+    state: tauri::State<Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    use skins::slog::log_info;
+    let storage = skins::injection::storage::ModStorageService::new(skins::paths::mods_dir());
+    let root = storage.mods_root().to_path_buf();
+    let Some(entry) = storage
+        .list_mods_for_category(&category)
+        .into_iter()
+        .find(|e| e.id == mod_id || e.name == mod_id)
+    else {
+        return Err("Category mod not found".into());
+    };
+    let selection = skins::state::CategoryModSelection {
+        mod_name: entry.name.clone(),
+        mod_path: root.join(entry.path.replace('/', "\\")).to_string_lossy().into_owned(),
+        mod_folder_name: entry.name.clone(),
+        relative_path: entry.path.clone(),
+    };
+    let persisted = {
+        let mut shared = state.skins.shared.lock_safe();
+        match category.as_str() {
+            "maps" => shared.category_mods.map = Some(selection),
+            "fonts" => shared.category_mods.font = Some(selection),
+            "announcers" => shared.category_mods.announcer = Some(selection),
+            _ => {
+                shared.category_mods.others.retain(|o| o.relative_path != selection.relative_path);
+                shared.category_mods.others.push(selection);
+            }
+        }
+        shared.category_mods.clone()
+    };
+    // Set-and-forget: persist so it re-applies every game until changed.
+    skins::favorites::save_category_mods(&persisted);
+    log_info!("[CATEGORY] pick {category} mod={}", entry.name);
+    Ok(json!({ "ok": true, "category": category, "modName": entry.name }))
+}
+
+/// Clear a category selection. For map/font/announcer clears the slot; for the
+/// stacking categories, `mod_id` removes one (or omit it to clear all `others`).
+#[tauri::command]
+fn skins_clear_category_mod(category: String, mod_id: Option<String>, state: tauri::State<Arc<AppState>>) {
+    use skins::slog::log_info;
+    let persisted = {
+        let mut shared = state.skins.shared.lock_safe();
+        match category.as_str() {
+            "maps" => shared.category_mods.map = None,
+            "fonts" => shared.category_mods.font = None,
+            "announcers" => shared.category_mods.announcer = None,
+            _ => match mod_id {
+                Some(id) => shared.category_mods.others.retain(|o| o.relative_path != id && o.mod_name != id),
+                None => shared.category_mods.others.clear(),
+            },
+        }
+        shared.category_mods.clone()
+    };
+    skins::favorites::save_category_mods(&persisted);
+    log_info!("[CATEGORY] clear {category}");
+}
+
+// ── Forms (Elementalist Lux, Sahn Uzal, Risen Legend HOL chromas — the
+// `features::special::FORMS` table). A skin's forms are surfaced like chromas;
+// picking one routes through the same `chroma::handle_selection` dispatcher. ──
+
+/// List the alternate forms for a skin (empty for skins without any).
+#[tauri::command]
+fn skins_list_forms(skin_id: i64) -> serde_json::Value {
+    let forms: Vec<serde_json::Value> = skins::features::special::FORMS
+        .iter()
+        .filter(|f| f.base_id == skin_id)
+        .map(|f| json!({ "fakeId": f.fake_id, "display": f.display }))
+        .collect();
+    json!({ "skinId": skin_id, "forms": forms })
+}
+
+/// Pick a special form (routes through `chroma::handle_selection`, which detects
+/// the form by its fake id and sets `selected_form_path` + the hovered id).
+#[tauri::command]
+fn skins_pick_form(skin_id: i64, fake_id: i64, display: String, state: tauri::State<Arc<AppState>>) {
+    use skins::slog::log_info;
+    log_info!("[FORM] pick skin={skin_id} form={fake_id} ({display})");
+    let mut shared = state.skins.shared.lock_safe();
+    skins::features::chroma::handle_selection(&mut shared, None, skin_id, fake_id, &display);
+    shared.manual_pick_this_session = true;
+}
+
+/// Toggle "historic mode" — remember + auto-apply the last pick per champion.
+/// Session-scoped; when enabled mid-champ-select it applies the current champ's
+/// remembered pick immediately, and every future lock restores that champ's.
+#[tauri::command]
+fn skins_set_historic_mode(enabled: bool, state: tauri::State<Arc<AppState>>) -> bool {
+    use skins::slog::log_info;
+    let champ = {
+        let mut shared = state.skins.shared.lock_safe();
+        shared.historic_enabled = enabled;
+        if enabled {
+            shared.locked_champ_id.or(shared.hovered_champ_id)
+        } else {
+            shared.historic_mode_active = false;
+            shared.historic_selection = None;
+            None
+        }
+    };
+    if let Some(cid) = champ {
+        if let Some(entry) = skins::features::historic::get_historic_skin_for_champion(cid) {
+            let mut shared = state.skins.shared.lock_safe();
+            shared.historic_selection = Some(entry.to_selection());
+            shared.historic_mode_active = true;
+        }
+    }
+    log_info!("[HISTORIC] mode {}", if enabled { "enabled" } else { "disabled" });
+    enabled
+}
+
+/// Screen rect of the League client window (physical px) so the overlay can
+/// anchor itself to the client — which is usually windowed, not fullscreen —
+/// instead of the monitor corner. `null` when the client isn't open/visible.
+#[tauri::command]
+fn league_client_rect() -> Option<serde_json::Value> {
+    winutil::league_client_rect().map(|(l, t, r, b)| json!({ "left": l, "top": t, "right": r, "bottom": b }))
 }
 
 /// Fallback `party-state`-shaped JSON for the (brief) window before
@@ -1244,6 +1785,7 @@ async fn scan_downloaded_mod(
 /// so the caller can batch a save. When the scan blocks (`Suspicious`/
 /// `Malicious`) and `force` is false, nothing is written; the returned record
 /// is `None`, which the caller must treat as "not installed."
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn place_library_mod(
     app: Option<&AppHandle>,
     base: &str,
@@ -1464,6 +2006,7 @@ async fn announcer_studio_build(
 /// Returns `{status: "installed"|"blocked", scan, record}` — `force` lets the
 /// user override a blocked verdict after seeing the warning; defaults `false`
 /// so a bare call never silently installs something flagged.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn library_install(
     app: AppHandle,
@@ -1753,7 +2296,6 @@ pub fn run() {
         config_gen: AtomicU64::new(0),
         skins: Arc::new(skins::SkinsState::new()),
         skins_phase: Mutex::new(None),
-        skins_bridge: Mutex::new(None),
         skins_injection: Mutex::new(None),
         skins_party: Mutex::new(None),
     });
@@ -1798,13 +2340,30 @@ pub fn run() {
             skins_set_ack,
             skins_open_cslol_dir,
             skins_download,
-            skins_activate_pengu,
             skins_set_enabled,
             skins_get_customization,
             skins_set_customization,
             skins_catalog,
             skins_get_favorites,
             skins_set_favorite,
+            skins_pick_skin,
+            skins_preview_skin,
+            skins_clear_pick,
+            skins_list_champion_skins,
+            skins_roll_random,
+            skins_cancel_random,
+            skins_list_custom_mods,
+            skins_pick_custom_mod,
+            skins_clear_custom_mod,
+            skins_custom_mod_preview,
+            skins_custom_mod_thumb,
+            skins_list_category_mods,
+            skins_pick_category_mod,
+            skins_clear_category_mod,
+            skins_list_forms,
+            skins_pick_form,
+            skins_set_historic_mode,
+            league_client_rect,
             skins_party_enable,
             skins_party_disable,
             skins_party_add_peer,
@@ -1850,6 +2409,55 @@ pub fn run() {
             // Anonymous usage heartbeat — no-ops until `telemetry.enabled` (dark).
             telemetry::spawn(handle.clone());
 
+            // Skin-picker overlay visibility: float it over the client during
+            // champ select (shown once per entry, dismissable), hide it any
+            // other time — so single-monitor users pick on top of the client
+            // instead of alt-tabbing to the app. Polls the live LCU phase
+            // directly (not the ~2.5s-lagged safety snapshot) so it hides
+            // promptly when the game starts and never covers gameplay.
+            let overlay_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let client = lcu::build_lcu_client(3.0);
+                let mut was_champ_select = false;
+                let mut shown_this_cs = false;
+                let mut vis_emitted = false;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                    let in_cs = match lcu::cached_auth() {
+                        Some(auth) => lcu::get_phase(&client, &auth).await.as_deref() == Some("ChampSelect"),
+                        None => false,
+                    };
+                    let enabled = {
+                        let st = overlay_handle.state::<Arc<AppState>>();
+                        let e = st.config.lock_safe().skins.enabled;
+                        e
+                    };
+                    if in_cs && !was_champ_select {
+                        shown_this_cs = false; // fresh champ select — allow one auto-show
+                    }
+                    was_champ_select = in_cs;
+                    let want_visible = in_cs && enabled;
+                    if let Some(w) = overlay_handle.get_webview_window("overlay") {
+                        // Show the launcher the moment champ select starts (not only
+                        // after a champ is hovered/locked) — the global mods
+                        // (maps/announcer/fonts/other) are champion-independent, so
+                        // users get the whole champ-select window to set them up.
+                        if in_cs && enabled && !shown_this_cs {
+                            let _ = w.show(); // no set_focus — never steal focus from the client
+                            shown_this_cs = true;
+                        } else if !in_cs {
+                            let _ = w.hide();
+                        }
+                        // Tell the overlay JS to pause/resume its own poll loop —
+                        // it can't see window visibility from inside the webview.
+                        if want_visible != vis_emitted {
+                            vis_emitted = want_visible;
+                            let _ = w.emit("overlay-visibility", want_visible);
+                        }
+                    }
+                }
+            });
+
             // Auto-update: silently check GitHub Releases for a signed newer
             // version and surface the pill. Best-effort: any failure just logs
             // and the app runs the current version. Skipped in dev builds.
@@ -1872,12 +2480,6 @@ pub fn run() {
             // client to watch. Cheaper than gating on a settings flag.
             let phase_handle = skins::phase::spawn(handle.clone(), st.skins.clone());
 
-            // Skins bridge server: the local axum server the in-client Pengu
-            // Loader plugins connect to. `bridge::spawn` only needs to
-            // `subscribe()` the phase actor's events, so it borrows
-            // `phase_handle` rather than consuming it — `PhaseHandle` isn't
-            // `Clone`, and `skins_phase` below still needs to own it for
-            // `lcu_ws.rs`'s fan-out.
             let injection_manager = std::sync::Arc::new(skins::injection::InjectionManager::new(
                 skins::injection::tools::cslol_tools_dir(),
                 skins::paths::injection_mods_dir(),
@@ -1905,21 +2507,12 @@ pub fn run() {
                     skins::mod_scope::sweep_imported_mods(Some(&sweep_app));
                 });
             }
-            let bridge_handle = skins::bridge::spawn(
-                handle.clone(),
-                st.skins.clone(),
-                injection_manager.clone(),
-                &phase_handle,
-            );
-            *st.skins_bridge.lock_safe() = Some(bridge_handle.clone());
             // Stash the injection manager so the ticker/trigger can pull it from
             // the app handle at the loadout deadline.
             *st.skins_injection.lock_safe() = Some(injection_manager);
 
-            // Party mode manager: built after the bridge so it can hold a
-            // `BridgeHandle` clone to push `party-state` updates the moment the
-            // relay's member list changes, not just on request.
-            let party_manager = skins::party::manager::PartyManager::new(&handle, st.skins.clone(), bridge_handle);
+            // Party mode manager.
+            let party_manager = skins::party::manager::PartyManager::new(&handle, st.skins.clone());
             *st.skins_party.lock_safe() = Some(party_manager.clone());
 
             // NO auto-connect: zero relay connections until the user has both

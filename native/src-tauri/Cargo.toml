@@ -1,10 +1,10 @@
 [package]
 name = "league-tools"
-version = "2.5.0"
+version = "3.0.0"
 description = "Chud — native League of Legends toolkit"
 authors = ["Joshua P Ivy"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.84"
 
 # The library target Tauri uses; the binary just calls into it.
 [lib]
@@ -45,8 +45,6 @@ rand = "0.8"
 ed25519-dalek = { version = "2", features = ["rand_core"] } # party-mode selection signing (P0-F)
 regex = "1"
 junction = "1"                     # NTFS junctions for the extract-cache (S3)
-indexmap = "2"                     # skin-name map ordering (bridge protocol, S4)
-axum = { version = "0.7", features = ["ws"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

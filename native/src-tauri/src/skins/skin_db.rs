@@ -20,6 +20,7 @@ use crate::skins::slog::{log_info, log_warn};
 /// Stored behind `Arc` so a cache hit is an O(1) refcount bump, not a full
 /// clone of the (thousands-of-entries) map — this is hit repeatedly during
 /// ARAM bench swaps.
+#[allow(clippy::type_complexity)]
 static DB: OnceLock<Mutex<HashMap<String, Arc<HashMap<String, i64>>>>> = OnceLock::new();
 
 fn cache() -> &'static Mutex<HashMap<String, Arc<HashMap<String, i64>>>> {
@@ -78,7 +79,7 @@ pub fn resolve_skin_id(name: &str, lang: Option<&str>) -> Option<i64> {
         for (k, &id) in map.iter() {
             if k.contains(&needle) || needle.contains(k.as_str()) {
                 let diff = k.len().abs_diff(needle.len());
-                if best.map_or(true, |(b, _)| diff < b) {
+                if best.is_none_or(|(b, _)| diff < b) {
                     best = Some((diff, id));
                 }
             }

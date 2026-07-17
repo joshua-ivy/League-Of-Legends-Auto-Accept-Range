@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Stats {
     pub total_matches_accepted: u64,
@@ -15,12 +15,6 @@ pub struct Stats {
     pub session_matches_accepted: u64,
     /// Unix seconds when the current session started (0 = not started).
     pub session_start: u64,
-}
-
-impl Default for Stats {
-    fn default() -> Self {
-        Self { total_matches_accepted: 0, session_matches_accepted: 0, session_start: 0 }
-    }
 }
 
 fn now_secs() -> u64 {

@@ -179,7 +179,7 @@ async fn run_ticker(app: AppHandle, skins: Arc<SkinsState>, ticker_id: u64, gene
         }
 
         let now = TokioInstant::now();
-        let needs_resync = last_poll.map_or(true, |lp| now.duration_since(lp) >= TIMER_POLL_PERIOD);
+        let needs_resync = last_poll.is_none_or(|lp| now.duration_since(lp) >= TIMER_POLL_PERIOD);
         if needs_resync {
             last_poll = Some(now);
             if let Some(auth) = lcu::cached_auth() {

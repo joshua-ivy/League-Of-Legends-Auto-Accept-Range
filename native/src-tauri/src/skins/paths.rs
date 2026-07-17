@@ -1,13 +1,13 @@
 //! `%LOCALAPPDATA%\Chud` data-tree paths, plus elevation-aware desktop-user
 //! resolution (ported from `utils\core\paths.py`).
 //!
-//! The elevation dance matters because Pengu Loader plugins run inside the
-//! League client's CEF process — always unelevated, as the interactive
-//! desktop user. If Chud itself runs elevated as a *different* account
-//! ("Run as administrator"), naively reading `%LOCALAPPDATA%` would resolve
-//! the admin account's directory and the two halves of the app would write
-//! to different trees. Instead we find the desktop user via explorer.exe's
-//! token and use that account's `AppData\Local`, matching what Pengu Loader sees.
+//! The elevation dance matters because the Tauri webview/overlay run
+//! unelevated, as the interactive desktop user, while Chud's own process may
+//! be elevated ("Run as administrator", needed for injection). Naively
+//! reading `%LOCALAPPDATA%` from an elevated process would resolve the admin
+//! account's directory and the two halves of the app would write to
+//! different trees. Instead we find the desktop user via explorer.exe's
+//! token and use that account's `AppData\Local`.
 
 #![allow(dead_code)] // consumed by S2+
 
@@ -59,10 +59,6 @@ pub fn logs_dir() -> PathBuf {
     data_root().join("logs")
 }
 
-pub fn pengu_loader_dir() -> PathBuf {
-    data_root().join("Pengu Loader")
-}
-
 /// Create the full data-dir tree. Best-effort per directory: the first
 /// failure (e.g. a locked-down profile) aborts and surfaces to the caller,
 /// which logs it non-fatally (see `skins::init`).
@@ -76,7 +72,6 @@ pub fn ensure_tree() -> std::io::Result<()> {
         mods_dir(),
         resources_dir(),
         logs_dir(),
-        pengu_loader_dir(),
     ] {
         std::fs::create_dir_all(&dir)?;
     }

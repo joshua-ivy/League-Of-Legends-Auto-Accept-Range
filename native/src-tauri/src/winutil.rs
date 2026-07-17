@@ -27,6 +27,30 @@ pub fn lol_game_focused() -> bool {
     }
 }
 
+/// Screen rect (physical px: left, top, right, bottom) of the League *client*
+/// window — the CEF window champ select renders in, class `RCLIENT`. Used to
+/// anchor the overlay to the client instead of the monitor (the client is
+/// usually windowed, not fullscreen). `None` if it isn't open/visible.
+#[cfg(windows)]
+pub fn league_client_rect() -> Option<(i32, i32, i32, i32)> {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect, IsWindowVisible};
+    unsafe {
+        let hwnd = FindWindowW(w!("RCLIENT"), PCWSTR::null()).ok()?;
+        if hwnd.0.is_null() || !IsWindowVisible(hwnd).as_bool() {
+            return None;
+        }
+        let mut rect = RECT::default();
+        GetWindowRect(hwnd, &mut rect).ok()?;
+        // A minimized/zero client reports a degenerate rect — reject it.
+        if rect.right - rect.left < 200 || rect.bottom - rect.top < 200 {
+            return None;
+        }
+        Some((rect.left, rect.top, rect.right, rect.bottom))
+    }
+}
+
 /// Relaunch the current executable elevated (UAC prompt). The caller should
 /// exit afterwards so the elevated instance takes over.
 #[cfg(windows)]
@@ -78,6 +102,10 @@ pub fn open_in_browser(_url: &str) {}
 #[cfg(not(windows))]
 pub fn lol_game_focused() -> bool {
     false
+}
+#[cfg(not(windows))]
+pub fn league_client_rect() -> Option<(i32, i32, i32, i32)> {
+    None
 }
 #[cfg(not(windows))]
 pub fn relaunch_as_admin() {}

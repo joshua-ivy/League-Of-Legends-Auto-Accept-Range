@@ -23,6 +23,34 @@ fn favorites_path() -> std::path::PathBuf {
         .unwrap_or_else(|| paths::data_root().join("favorites.json"))
 }
 
+fn category_mods_path() -> std::path::PathBuf {
+    crate::config::config_path()
+        .parent()
+        .map(|d| d.join("category_mods.json"))
+        .unwrap_or_else(|| paths::data_root().join("category_mods.json"))
+}
+
+/// Load persisted global (non-skin) mod selections — announcer/font/map/other.
+/// Set-and-forget: they re-apply every game until the user changes them.
+pub fn load_category_mods() -> crate::skins::state::CategoryModSelections {
+    match std::fs::read_to_string(category_mods_path()) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Err(_) => Default::default(),
+    }
+}
+
+/// Persist the global mod selections to disk (called on every category pick/clear).
+pub fn save_category_mods(sel: &crate::skins::state::CategoryModSelections) {
+    if let Ok(text) = serde_json::to_string_pretty(sel) {
+        if let Some(parent) = category_mods_path().parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(category_mods_path(), text);
+        let n = sel.map.is_some() as usize + sel.font.is_some() as usize + sel.announcer.is_some() as usize + sel.others.len();
+        log_info!("[CATEGORY] Saved {n} persisted mod selection(s)");
+    }
+}
+
 /// Old location (install dir) — read as a fallback so a user who saved
 /// favorites before this fix keeps them.
 fn legacy_favorites_path() -> std::path::PathBuf {

@@ -426,7 +426,7 @@ pub async fn build_profile(client: &reqwest::Client, auth: &Auth) -> Value {
         .filter(|(c, _)| *c > 0)
         .map(|(c, label)| json!({ "label": label, "pct": ((*c as f64 / pg) * 100.0).round() as i64 }))
         .collect();
-    roles.sort_by(|a, b| i(b, "pct").cmp(&i(a, "pct")));
+    roles.sort_by_key(|b| std::cmp::Reverse(i(b, "pct")));
     roles.truncate(3);
 
     let perf = json!({

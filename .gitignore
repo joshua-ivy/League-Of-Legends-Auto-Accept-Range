@@ -47,10 +47,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Pengu Loader rebrand backups + runtime logs (never bundle/commit)
-native/src-tauri/resources/pengu-loader/*.rosebak
-native/src-tauri/resources/pengu-loader/*.log
-
 # Local handoff doc — contains secrets, never commit
 CHUD-HANDOFF.md
 

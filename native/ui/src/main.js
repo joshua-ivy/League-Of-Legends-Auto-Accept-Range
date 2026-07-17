@@ -10,7 +10,7 @@
 // Skins control panel (S9, see docs/SKINS_PORT.md) — its own command/event
 // set, additive, does not touch anything above:
 //   commands: skins_get_state, skins_save_settings, skins_download,
-//             skins_activate_pengu, skins_set_enabled,
+//             skins_set_enabled,
 //             skins_party_enable, skins_party_disable, skins_party_add_peer,
 //             skins_party_get_state, skins_party_set_consent,
 //             skins_party_set_auto_announcers
@@ -21,10 +21,8 @@
 //   been called.
 //   events:   skins-download-progress ({phase, done, total})
 //             skins-download-done     ({ok, error?})
-//   Party has no push event: the backend's "party-state" broadcast goes out
-//   over the in-client bridge WebSocket to the Pengu Loader plugins, not to
-//   this webview — the Skins page instead polls skins_party_get_state while
-//   it's the active page.
+//   Party has no push event to this webview — the Skins page instead polls
+//   skins_party_get_state while it's the active page.
 // Falls back to MOCK_STATE / MOCK data in a plain browser so index.html
 // previews without a backend.
 // ============================================================
@@ -473,15 +471,15 @@ async function renderDiagnostics() {
 
 // ── Skins ────────────────────────────────────────────────────────────────────
 // Control panel for the skin-injection subsystem (S9): enable/settings,
-// League path, download w/ progress, injection settings, party. The
-// in-client chroma/forms picker itself is the bundled CHUD-* Pengu Loader
-// plugins, not this page — see docs/SKINS_PORT.md.
+// League path, download w/ progress, injection settings, party. Skin
+// picking itself happens via Tauri commands + the overlay window — see
+// docs/SKINS_PORT.md.
 const DEFAULT_SKINS_STATE = {
   enabled: false, ackOk: false, ackVersion: 0, ackRequiredVersion: 1, policy: null,
-  bridgePort: null, penguActive: false, skinsDownloaded: false, hashesReady: false,
+  skinsDownloaded: false, hashesReady: false,
   leaguePath: "", injectionThresholdMs: 300, autoResumeSecs: 25, autoDownload: true,
   party: { enabled: false, my_token: null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [], consent_ok: false, consent_required_version: 1, auto_download_peer_announcers: false },
-  diagnostics: { bridgePort: null, penguActive: false, toolsAvailable: false, dllValid: false, skinsDownloaded: false, hashesReady: false, dataDir: "" },
+  diagnostics: { toolsAvailable: false, dllValid: false, skinsDownloaded: false, hashesReady: false, dataDir: "" },
 };
 let skinsState = null;
 let skinsCfg = null; // local editable copy of the injection-settings fields (snake_case — mirrors config::SkinsCfg, like DEFAULT_CONFIG/cfg above)
@@ -501,26 +499,6 @@ let skinsCatalog = null;        // [{champ_id, champ_name, skins:[{skin_id,name,
 let skinsFavorites = {};        // { "<champ_id>": <skin_id> }
 let favSearch = "";
 let favExpandedChamp = null;    // champ_id whose skins are shown
-
-// In-client declutter/customization toggles (mirrors config.client; applied by
-// the CHUD-Declutter Pengu plugin).
-let clientCustom = null;
-async function loadClientCustom() {
-  try { clientCustom = (await invoke("skins_get_customization")) || {}; }
-  catch { clientCustom = {}; }
-}
-const CC_OPTS = [
-  ["hide_notif_badges", "Do Not Disturb", "Silence the attention-nag pips & badges (activity-center dot, call-to-action pips, Clash pip, rewards badge)"],
-  ["hide_promos", "Hide promos & ads", "Deep-link promos and the Riot Discord banner"],
-  ["hide_rp_topup", "Hide RP top-up", "The “buy RP” nudge on the currency bar"],
-  ["hide_pass", "Hide battle pass", "The pass-progression widget on the home screen"],
-  ["hide_missions", "Hide missions", "Missions button / progression widget"],
-  ["hide_challenges", "Hide challenge banners", "Challenge and lobby banners"],
-  ["hide_event_timers", "Hide event timers", "Event countdown in the game-select bar"],
-  ["hide_loot", "Hide Loot tab", "Removes the Loot tab from the nav bar"],
-  ["hide_store", "Hide Store tab", "Removes the Store tab from the nav bar"],
-  ["hide_home_video", "Static home background", "Stops the animated play-screen video"],
-];
 
 async function loadSkinsState() {
   skinsState = (await invoke("skins_get_state")) || structuredClone(DEFAULT_SKINS_STATE);
@@ -576,8 +554,6 @@ function skinsStatusCard() {
   return `<div class="glass"><div class="diag-card-title"><span style="display:inline-flex;width:16px;height:16px;margin-right:8px;vertical-align:-3px;color:var(--magenta-soft)">${ico("diagnostics")}</span>Status</div>
     <div class="diag-list">
       ${skinsStatusRow("Client linked", state.clientOnline, "Connected", "Offline")}
-      ${skinsStatusRow("Bridge server", !!s.bridgePort, `Listening · 127.0.0.1:${s.bridgePort}`, "Not running")}
-      ${skinsStatusRow("Pengu Loader", s.penguActive, "Active", "Inactive")}
       ${skinsStatusRow("Skins downloaded", s.skinsDownloaded, "Ready", "Not downloaded")}
       ${skinsStatusRow("Game hashes", s.hashesReady, "Ready", "Not downloaded")}
       ${skinsStatusRow("CSLOL tools", d.toolsAvailable, "Present", "Missing")}
@@ -589,7 +565,6 @@ function skinsStatusCard() {
 
 function skinsSetupCard() {
   const s = skinsState;
-  const lockedActivate = !skinsAck;
   return `<div class="glass set-card">
     <div class="set-card-title"><span class="ci">${ico("bolt")}</span>Setup</div>
     <div class="set-list">
@@ -598,9 +573,7 @@ function skinsSetupCard() {
     </div>
     <div class="row" style="margin-top:6px;flex-wrap:wrap;gap:10px">
       <button class="btn sm primary" id="skinsDownloadBtn" ${skinsDownloadActive ? "disabled" : ""}>${skinsDownloadActive ? "Downloading…" : "Download skins"}</button>
-      <button class="btn sm" id="skinsActivateBtn" ${lockedActivate ? "disabled" : ""}>Activate Pengu Loader</button>
     </div>
-    ${lockedActivate ? `<div class="mod-lock"><span style="width:13px;height:13px;display:inline-flex">${ico("warning")}</span>Acknowledge the risk above to unlock activation.</div>` : ""}
     <div class="rc-bar" id="skinsProgressBar" style="margin-top:12px;${skinsDownloadActive ? "" : "display:none"}"><div class="rc-fill" id="skinsProgressFill" style="width:8%"></div></div>
     <div class="dim mono" id="skinsDownloadHint" style="font-size:11px;margin-top:6px;${skinsDownloadActive ? "" : "display:none"}"></div>
   </div>`;
@@ -792,34 +765,57 @@ function bindFavListEvents() {
   });
 }
 
-// ── Client declutter card ─────────────────────────────────────────────────────
-function clientCustomCardInner() {
-  const cc = clientCustom || {};
-  const sub = cc.enabled
-    ? CC_OPTS.map(([k, label, hint]) => setField(label, hint, `<div class="tog ${cc[k] ? "on" : ""}" data-cc="${k}"><div class="knob"></div></div>`)).join("")
-    : `<div class="dim" style="padding:6px 2px;font-size:12px">Turn on to choose what to hide.</div>`;
-  return `<div class="set-card-title"><span class="ci">${ico("settings")}</span>Client Extras</div>
-    <div class="dim" style="font-size:12px;margin:-4px 0 10px">Client-side tweaks — apply live in the League client (needs Pengu Loader active).</div>
-    <div class="set-list">
-      ${setField("Queue Arena minigame", "Play a skillshot-dodge game in the client while you search for a match", `<div class="tog ${cc.queue_arena !== false ? "on" : ""}" data-cc="queue_arena"><div class="knob"></div></div>`)}
-    </div>
-    <div class="set-list" style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08)">
-      ${setField("Enable declutter", "Master switch — hide promos, store pushes, battle-pass & event clutter", `<div class="tog ${cc.enabled ? "on" : ""}" data-cc="enabled"><div class="knob"></div></div>`)}
-      ${sub}
-    </div>`;
+// ── Pick-this-game card (injection-free per-game override, no in-client wheel) ──
+function skinPickCardInner() {
+  const champId = (skinsState && skinsState.currentChampId) || null;
+  const pickId = (skinsState && skinsState.currentPickSkinId) || null;
+  const title = `<div class="set-card-title"><span class="ci">${ico("skin")}</span>Pick This Game</div>`;
+  if (!champId) {
+    return `${title}<div class="dim" style="font-size:12px;padding:6px 2px">Lock a champion in champ select and their skins show up here — pick one and it injects for this game only. Prefer set-and-forget? Use Favorite Skins below.</div>`;
+  }
+  const champ = (skinsCatalog || []).find((c) => c.champ_id === champId);
+  if (!champ) return `${title}<div class="dim" style="padding:6px 2px">No downloaded skins for this champion yet — grab some in Setup above.</div>`;
+  const skinRows = champ.skins.map((s) => {
+    const on = pickId === s.skin_id;
+    const cls = `fav-skin${on ? " on" : ""}${s.downloaded ? "" : " undl"}`;
+    const note = s.downloaded ? "" : `<span class="dim" style="font-size:10.5px;margin-left:auto">not downloaded</span>`;
+    return `<div class="${cls}" data-pick-skin="${s.skin_id}" data-dl="${s.downloaded ? 1 : 0}">
+      <img class="fav-thumb" loading="lazy" src="${skinTileUrl(s.skin_id)}" alt="" data-imgerr="broken">
+      <span class="fav-dot">${on ? "●" : "○"}</span><span class="fav-sname">${esc(s.name)}</span>${note}</div>`;
+  }).join("");
+  const clearBtn = pickId != null ? `<button class="btn sm ghost" id="pickClear" style="margin-top:8px">Clear pick (use favorite / base)</button>` : "";
+  return `${title}
+    <div class="dim" style="font-size:12px;margin:-4px 0 10px">Picking for <b>${esc(champ.champ_name)}</b> — this game only. It injects when the game loads.</div>
+    <div class="fav-skinlist">${skinRows}</div>${clearBtn}`;
 }
-function clientCustomCard() { return `<div class="glass set-card" id="ccCard">${clientCustomCardInner()}</div>`; }
-function rerenderCcCard() { const c = document.getElementById("ccCard"); if (!c) return; c.innerHTML = clientCustomCardInner(); wireClientCustom(); }
-function wireClientCustom() {
-  document.querySelectorAll("#ccCard [data-cc]").forEach((t) => t.onclick = async () => {
-    const k = t.dataset.cc;
-    clientCustom = clientCustom || {};
-    clientCustom[k] = !clientCustom[k];
-    const fresh = await invoke("skins_set_customization", { customization: clientCustom });
-    if (fresh && typeof fresh === "object") clientCustom = fresh;
-    rerenderCcCard();
+function skinPickCard() { return `<div class="glass set-card" id="skinPickCard">${skinPickCardInner()}</div>`; }
+function rerenderPickCard() {
+  const c = document.getElementById("skinPickCard");
+  if (!c) return;
+  c.innerHTML = skinPickCardInner();
+  wirePickCard();
+}
+function wirePickCard() {
+  document.querySelectorAll("#skinPickCard [data-pick-skin]").forEach((el) => el.onclick = async () => {
+    if (el.dataset.dl !== "1") { toast("Not downloaded", "That skin isn't downloaded, so it can't be injected. Download skins in Setup.", "warning"); return; }
+    const skin = parseInt(el.dataset.pickSkin, 10);
+    const already = (skinsState && skinsState.currentPickSkinId) === skin;
+    try {
+      if (already) { await invoke("skins_clear_pick"); if (skinsState) skinsState.currentPickSkinId = null; }
+      else { await invoke("skins_pick_skin", { skinId: skin }); if (skinsState) skinsState.currentPickSkinId = skin; }
+    } catch (e) { toast("Couldn't set pick", String(e), "warning"); return; }
+    rerenderPickCard();
+    toast(already ? "Pick cleared" : "Skin picked", already ? "Back to your favorite / base for this game." : "It'll inject when the game loads.", "success");
   });
+  const clr = document.getElementById("pickClear");
+  if (clr) clr.onclick = async () => {
+    try { await invoke("skins_clear_pick"); } catch (e) {}
+    if (skinsState) skinsState.currentPickSkinId = null;
+    rerenderPickCard();
+    toast("Pick cleared", "Back to your favorite / base for this game.", "neutral");
+  };
 }
+
 
 async function renderSkins() {
   const p = document.getElementById("page");
@@ -827,7 +823,6 @@ async function renderSkins() {
     p.innerHTML = `<div class="glass"><div class="muted">Loading skins state…</div></div>`;
     await loadSkinsState();
   }
-  if (clientCustom === null) await loadClientCustom();
   // Load the favorites catalog BEFORE first paint (same as skinsState above), so
   // the champ list renders populated and A-Z on the first frame — no lazy
   // rerender race that could leave the default (unsearched) view blank.
@@ -843,15 +838,15 @@ async function renderSkins() {
       </div>
       <div class="tog ${skinsState.enabled ? "on" : ""} ${skinsAck ? "" : "disabled"}" ${skinsAck ? `data-skins-enable="1"` : ""}><div class="knob"></div></div>
     </div>
+    ${skinPickCard()}
     <div class="diag-grid">${skinsStatusCard()}${skinsSetupCard()}</div>
     ${skinsSettingsCard()}
     ${skinsFavoritesCard()}
-    ${clientCustomCard()}
     ${skinsPartyCard()}
   </div>`;
   wireSkins();
+  wirePickCard();
   wireFavorites();
-  wireClientCustom();
   startSkinsPoll();
 }
 
@@ -889,8 +884,6 @@ function wireSkins() {
 
   const dlBtn = document.getElementById("skinsDownloadBtn");
   if (dlBtn) dlBtn.onclick = onSkinsDownload;
-  const actBtn = document.getElementById("skinsActivateBtn");
-  if (actBtn) actBtn.onclick = onSkinsActivate;
   const saveBtn = document.getElementById("skinsSaveCfg");
   if (saveBtn) saveBtn.onclick = onSkinsSaveSettings;
 
@@ -969,38 +962,6 @@ async function onSkinsDownloadDone(payload) {
   if (currentPage === "skins") renderSkins();
 }
 
-// `skins_activate_pengu`/`skins_party_*` return `Result<_, String>` on the
-// Rust side — shared.js's `invoke` swallows the error text (by design, see
-// shared.js), so these call `TAURI.invoke` directly to surface the real
-// reason in the toast.
-async function onSkinsActivate() {
-  if (!skinsAck) return;
-  const btn = document.getElementById("skinsActivateBtn");
-  if (btn) btn.disabled = true;
-  try {
-    if (TAURI) {
-      const r = await TAURI.invoke("skins_activate_pengu");
-      if (r && r.restartNeeded && !r.restarted) {
-        // Hook placed, but the client-restart request couldn't reach League
-        // (login screen / mid-transition / stale lockfile). A manual restart
-        // loads the now-present hook reliably.
-        toast("Pengu activated — restart League to finish", "Chud couldn't auto-restart your client. Fully close League and reopen it to load Chud's skins.", "warning");
-      } else if (r && r.restartNeeded && r.restarted) {
-        toast("Pengu Loader activated", "Your League client is restarting to load Chud.", "success");
-      } else {
-        toast("Pengu Loader activated", "Start League to load Chud's skins.", "success");
-      }
-    } else {
-      toast("Pengu Loader activated", "(preview mode — no backend)", "success");
-    }
-  } catch (e) {
-    toast("Activation failed", String(e || "Could not activate Pengu Loader."), "danger");
-  }
-  if (btn) btn.disabled = false;
-  await loadSkinsState();
-  if (currentPage === "skins") renderSkins();
-}
-
 async function onSkinsSaveSettings() {
   const fresh = await invoke("skins_save_settings", { settings: skinsCfg });
   if (fresh) {
@@ -1017,6 +978,9 @@ async function onSkinsSaveSettings() {
   toast("Skins settings saved", "Configuration written to disk.", "success");
 }
 
+// `skins_party_*` return `Result<_, String>` on the Rust side — shared.js's
+// `invoke` swallows the error text (by design, see shared.js), so these call
+// `TAURI.invoke` directly to surface the real reason in the toast.
 async function onSkinsPartyToggle() {
   const enabling = !(skinsState.party && skinsState.party.enabled);
   try {
@@ -1100,13 +1064,25 @@ async function onSkinsAddPeer() {
 // this webview — see the file-header IPC contract note).
 function startSkinsPoll() {
   stopSkinsPoll();
+  let lastChamp = (skinsState && skinsState.currentChampId) || null;
   skinsPollTimer = setInterval(async () => {
     if (currentPage !== "skins") { stopSkinsPoll(); return; }
-    // Party mode is opt-in — no need to poll its state when it's off (the
-    // enable/add-peer handlers refresh it directly). Saves an IPC call every 3s.
-    if (!skinsState || !skinsState.party || !skinsState.party.enabled) return;
-    const fresh = await invoke("skins_party_get_state");
-    if (fresh) { skinsState.party = fresh; refreshPartyCard(); }
+    // Track the current champ-select champion so "Pick This Game" shows the
+    // right skins the moment you lock in (replaces the in-client wheel).
+    try {
+      const fresh = await invoke("skins_get_state");
+      if (fresh && skinsState) {
+        const champChanged = fresh.currentChampId !== lastChamp;
+        skinsState.currentChampId = fresh.currentChampId;
+        skinsState.currentPickSkinId = fresh.currentPickSkinId;
+        if (champChanged) { lastChamp = fresh.currentChampId; rerenderPickCard(); }
+      }
+    } catch (e) {}
+    // Party mode is opt-in — only refresh its card when enabled.
+    if (skinsState && skinsState.party && skinsState.party.enabled) {
+      const fp = await invoke("skins_party_get_state");
+      if (fp) { skinsState.party = fp; refreshPartyCard(); }
+    }
   }, 3000);
 }
 function stopSkinsPoll() { if (skinsPollTimer) { clearInterval(skinsPollTimer); skinsPollTimer = null; } }
@@ -1298,6 +1274,7 @@ async function boot() {
     ev.listen("skins-download-progress", (e) => { if (currentPage === "skins") onSkinsDownloadProgress(e?.payload); });
     ev.listen("skins-download-done", (e) => { onSkinsDownloadDone(e?.payload); });
     ev.listen("injection-denied", (e) => { const p = e?.payload; if (p) toast(`Injection blocked — ${p.code}`, p.message || "", "danger"); });
+    ev.listen("open-library", () => { if (window.ChudNavTo) window.ChudNavTo("library"); });
     ev.listen("update-available", (e) => showUpdatePill(e?.payload));
     ev.listen("update-progress", (e) => onUpdateProgress(e?.payload));
   }

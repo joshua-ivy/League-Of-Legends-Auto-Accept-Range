@@ -47,7 +47,7 @@ pub struct CustomModSelection {
 /// `bridge/handlers.rs`'s `select-map`/`select-font`/`select-announcer`/
 /// `select-other` handlers write straight into `SkinsShared::category_mods`,
 /// so `trigger.rs`'s injection trigger sees real bridge-driven selections.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CategoryModSelection {
     pub mod_name: String,
     pub mod_path: String,
@@ -55,7 +55,8 @@ pub struct CategoryModSelection {
     pub relative_path: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct CategoryModSelections {
     pub map: Option<CategoryModSelection>,
     pub font: Option<CategoryModSelection>,
@@ -166,9 +167,18 @@ pub struct SkinsShared {
     pub random_mode_active: bool,
 
     // ---- Historic mode (remember last injected unowned skin per champion) ----
+    /// User toggle ("remember my picks"): when true, each champ-lock loads that
+    /// champion's saved pick into `historic_selection`. Session-scoped (survives
+    /// champ-select resets, unlike `historic_mode_active`), set via
+    /// `skins_set_historic_mode`.
+    pub historic_enabled: bool,
     pub historic_mode_active: bool,
     pub historic_selection: Option<HistoricSelection>,
     pub historic_first_detection_done: bool,
+    /// Set the moment the user makes ANY manual pick (skin/form/custom mod/
+    /// random roll) this champ-select session — guards the on-lock historic
+    /// restore below from silently overriding a pre-lock manual pick.
+    pub manual_pick_this_session: bool,
 
     // `ui_skin_thread` back-reference dropped — wired via channels in later
     // milestones.
@@ -254,9 +264,11 @@ impl Default for SkinsShared {
             random_skin_id: None,
             random_mode_active: false,
 
+            historic_enabled: false,
             historic_mode_active: false,
             historic_selection: None,
             historic_first_detection_done: false,
+            manual_pick_this_session: false,
 
             champion_exchange_triggered: false,
 
@@ -322,6 +334,7 @@ impl SkinsShared {
         self.historic_mode_active = false;
         self.historic_selection = None;
         self.historic_first_detection_done = false;
+        self.manual_pick_this_session = false;
 
         // Clear the custom mod selection from the previous game so the
         // mod-name popup doesn't re-appear until re-picked.

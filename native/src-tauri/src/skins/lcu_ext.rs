@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 use sysinfo::{ProcessesToUpdate, System};
 
 use crate::lcu::{self, Auth};
+use crate::skins::slog::log_info;
 use crate::LockExt;
 
 // ---------------------------------------------------------------------
@@ -345,6 +346,9 @@ pub fn compute_locked(session: &SessionData) -> HashMap<i64, i64> {
 pub struct ChromaInfo {
     pub id: i64,
     pub name: String,
+    /// Hex swatch colours from the LCU (`colors`), used to tint the picker pills
+    /// so the user recognises a chroma by sight rather than an opaque number.
+    pub colors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -440,7 +444,11 @@ pub fn build_skin_cache(champ: ChampionData, champion_id: i64) -> ChampionSkinCa
         let mut chroma_details = Vec::with_capacity(raw_chromas.len());
         for chroma in &raw_chromas {
             let Some(chroma_id) = chroma.id else { continue };
-            let info = ChromaInfo { id: chroma_id, name: chroma.name.clone().unwrap_or_default() };
+            let info = ChromaInfo {
+                id: chroma_id,
+                name: chroma.name.clone().unwrap_or_default(),
+                colors: chroma.colors.clone().unwrap_or_default(),
+            };
             cache.chroma_id_map.insert(chroma_id, info.clone());
             chroma_details.push(info);
         }
@@ -645,13 +653,19 @@ fn is_patch_success(status: Option<reqwest::StatusCode>) -> bool {
 /// PATCH the champ-select action's `selectedSkinId` (works before lock).
 pub async fn set_selected_skin(client: &reqwest::Client, auth: &Auth, action_id: i64, skin_id: i64) -> bool {
     let path = format!("/lol-champ-select/v1/session/actions/{action_id}");
-    is_patch_success(patch_json(client, auth, &path, json!({ "selectedSkinId": skin_id })).await)
+    let status = patch_json(client, auth, &path, json!({ "selectedSkinId": skin_id })).await;
+    let ok = is_patch_success(status);
+    log_info!("[LCU-FORCE] action PATCH selectedSkinId={skin_id} (action={action_id}) -> status={status:?} ok={ok}");
+    ok
 }
 
 /// PATCH `my-selection`'s `selectedSkinId` (works after champion lock).
 pub async fn set_my_selection_skin(client: &reqwest::Client, auth: &Auth, skin_id: i64) -> bool {
     let path = "/lol-champ-select/v1/session/my-selection";
-    is_patch_success(patch_json(client, auth, path, json!({ "selectedSkinId": skin_id })).await)
+    let status = patch_json(client, auth, path, json!({ "selectedSkinId": skin_id })).await;
+    let ok = is_patch_success(status);
+    log_info!("[LCU-FORCE] my-selection PATCH selectedSkinId={skin_id} -> status={status:?} ok={ok}");
+    ok
 }
 
 // ---------------------------------------------------------------------

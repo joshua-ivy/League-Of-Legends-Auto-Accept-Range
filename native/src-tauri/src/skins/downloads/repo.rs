@@ -263,10 +263,8 @@ fn cleanup_removed(dir: &Path, expected_rel: &HashSet<String>, have_entries: boo
         }
         let Ok(rel) = file.strip_prefix(dir) else { continue };
         let rel_str = normalize_rel(&rel.to_string_lossy());
-        if !expected_rel.contains(&rel_str) {
-            if std::fs::remove_file(&file).is_ok() {
-                deleted += 1;
-            }
+        if !expected_rel.contains(&rel_str) && std::fs::remove_file(&file).is_ok() {
+            deleted += 1;
         }
     }
     if deleted > 0 {

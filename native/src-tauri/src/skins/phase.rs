@@ -636,6 +636,18 @@ async fn process_session(
             if let Some(fav) = fav {
                 log_info!("[FAVORITES] Champion {champion_id} has favorite skin {fav} — will auto-apply unless you pick another");
             }
+            // Historic mode ("remember my picks"): the lock reset above cleared
+            // `historic_mode_active`; if the user has the toggle on, restore this
+            // champion's saved pick so the ticker auto-applies it below a manual pick.
+            // Skipped if the user already made a manual pick this session (pre-lock
+            // hover pick) — historic must not silently override that.
+            if shared.historic_enabled && !shared.manual_pick_this_session {
+                if let Some(entry) = crate::skins::features::historic::get_historic_skin_for_champion(champion_id) {
+                    shared.historic_selection = Some(entry.to_selection());
+                    shared.historic_mode_active = true;
+                    log_info!("[HISTORIC] Champion {champion_id} — restoring remembered pick");
+                }
+            }
         }
         if let Some(auth) = lcu::cached_auth() {
             if !scraper_cache.is_loaded_for_champion(champion_id) {
@@ -665,6 +677,7 @@ fn apply_champion_exchange(shared: &mut SkinsShared, new_champion_id: i64) {
     shared.historic_mode_active = false;
     shared.historic_selection = None;
     shared.historic_first_detection_done = false;
+    shared.manual_pick_this_session = false;
     shared.champion_exchange_triggered = true;
 }
 

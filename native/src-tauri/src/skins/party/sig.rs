@@ -46,6 +46,7 @@ fn signing_payload(
 /// Sign a selection with our ephemeral per-`enable()` session key.
 /// `chroma` is `-1` for "no chroma", `hash`/`announcer` are `"-"` when unset
 /// (matching `manager.rs::broadcast_skin_update`'s field conventions).
+#[allow(clippy::too_many_arguments)]
 pub fn sign_selection(
     key: &SigningKey,
     epoch: &str,
