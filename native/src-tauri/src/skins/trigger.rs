@@ -244,7 +244,7 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     // Bake the skin-name card onto the loadscreen. `stage_party_mods` only
     // cleaned the mods dir when it had peers to stage, so tell the helper whether
     // that clean already happened.
-    if let Some(card) = stage_loadscreen_card(&app, ui_skin_id, champ_id, !party_folders.is_empty()).await {
+    if let Some(card) = stage_loadscreen_card(&app, &skins, ui_skin_id, champ_id, !party_folders.is_empty()).await {
         party_folders.push(card);
     }
 
@@ -299,30 +299,56 @@ async fn stage_party_mods(party_mgr: &Option<Arc<crate::skins::party::manager::P
 /// see non-empty extras, skip its own clean, and leak stale mods.
 async fn stage_loadscreen_card(
     app: &AppHandle,
+    skins: &Arc<SkinsState>,
     ui_skin_id: Option<i64>,
     champ_id: Option<i64>,
     mods_dir_clean: bool,
 ) -> Option<String> {
-    let skin_id = ui_skin_id.filter(|&id| id != 0)?;
-    let champ_id = champ_id?;
+    // Diagnostic: the skin id the trigger snapshotted vs. a fresh read taken
+    // right now. A divergence means the user's last-second re-pick landed after
+    // the snapshot (the "spam-click → card shows base" report) — so we can tell
+    // a stale snapshot apart from a name-resolution bug purely from the logs.
+    let fresh_hovered = skins.shared.lock_safe().last_hovered_skin_id;
+    log_info!(
+        "[LOADSCREEN] stage: snapshot_skin={ui_skin_id:?} fresh_hovered={fresh_hovered:?} champ={champ_id:?} mods_dir_clean={mods_dir_clean}"
+    );
+
+    let Some(skin_id) = ui_skin_id.filter(|&id| id != 0) else {
+        log_info!("[LOADSCREEN] skip: no non-zero skin id (snapshot_skin={ui_skin_id:?})");
+        return None;
+    };
+    let Some(champ_id) = champ_id else {
+        log_info!("[LOADSCREEN] skip: no champ id");
+        return None;
+    };
     let (enabled, allowed) = {
         let app_state = app.state::<Arc<AppState>>();
         let cfg = app_state.config.lock_safe();
         (cfg.skins.loadscreen_labels, crate::net::allowed_origins(&cfg))
     };
     if !enabled {
+        log_info!("[LOADSCREEN] skip: feature disabled");
         return None;
     }
-    let auth = lcu::cached_auth()?;
+    let Some(auth) = lcu::cached_auth() else {
+        log_warn!("[LOADSCREEN] skip: no cached LCU auth");
+        return None;
+    };
     let lcu_client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
-    let (alias, skin_name) = lcu_ext::loadscreen_target(&lcu_client, &auth, champ_id, skin_id).await?;
+    let Some((alias, skin_name)) = lcu_ext::loadscreen_target(&lcu_client, &auth, champ_id, skin_id).await else {
+        log_warn!("[LOADSCREEN] skip: LCU had no skin name for champ {champ_id} skin {skin_id} (num={})", skin_id % 1000);
+        return None;
+    };
+    log_info!("[LOADSCREEN] resolved skin {skin_id} (num={}) -> '{skin_name}' alias='{alias}'", skin_id % 1000);
 
     // Committed to writing the card — ensure the mods dir is clean first.
     if !mods_dir_clean {
         storage::clean_mods_dir(&paths::injection_mods_dir());
     }
     let http = crate::net::build_external_client(15.0, allowed.clone());
-    crate::skins::features::loadscreen_label::build(skin_id, &skin_name, &alias.to_lowercase(), &alias, &http, &allowed).await
+    let r = crate::skins::features::loadscreen_label::build(skin_id, &skin_name, &alias.to_lowercase(), &alias, &http, &allowed).await;
+    log_info!("[LOADSCREEN] build result for '{skin_name}': {r:?}");
+    r
 }
 
 fn log_trigger_summary(ticker_id: u64, name: &str, custom_mod: Option<&CustomModSelection>, category_mods: &CategoryModSelections) {
@@ -621,7 +647,7 @@ async fn run_custom_mod_injection(
     // art isn't an official skin, so no CommunityDragon loadscreen matches it.
     // The mods dir was already cleaned at the top of this function.
     if !has_custom_skin_folder {
-        if let Some(card) = stage_loadscreen_card(app, user_skin_id, champion_id, true).await {
+        if let Some(card) = stage_loadscreen_card(app, skins, user_skin_id, champion_id, true).await {
             extra_names.push(card);
             labels.push("Loadscreen name".to_string());
         }

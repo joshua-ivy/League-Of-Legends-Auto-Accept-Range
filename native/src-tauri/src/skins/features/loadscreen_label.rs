@@ -190,6 +190,7 @@ pub async fn build(
 ) -> Option<String> {
     let num = skin_id % 1000;
     let (url, inner_tex) = loadscreen_paths(champ_key, num);
+    log_info!("[LOADSCREEN] build skin_id={skin_id} num={num} name='{skin_name}' alias='{champ_alias}' -> {inner_tex}");
 
     let png = match crate::net::get_bytes_checked(http, &url, allowed, 8 * 1024 * 1024).await {
         Ok(b) => b,
@@ -198,13 +199,25 @@ pub async fn build(
             return None;
         }
     };
-    let font = load_riot_font(http, allowed).await?;
-    let mut img = image::load_from_memory(&png).ok()?.to_rgba8();
+    let Some(font) = load_riot_font(http, allowed).await else {
+        log_warn!("[LOADSCREEN] font unavailable — skipping card for '{skin_name}'");
+        return None;
+    };
+    let mut img = match image::load_from_memory(&png) {
+        Ok(i) => i.to_rgba8(),
+        Err(e) => {
+            log_warn!("[LOADSCREEN] card PNG decode failed for '{skin_name}' ({url}): {e}");
+            return None;
+        }
+    };
     if img.width() != CARD_W || img.height() != CARD_H {
         img = image::imageops::resize(&img, CARD_W, CARD_H, image::imageops::FilterType::Lanczos3);
     }
     draw_skin_name(&mut img, &font, skin_name);
-    let tex = encode_tex_bc1(&img)?;
+    let Some(tex) = encode_tex_bc1(&img) else {
+        log_warn!("[LOADSCREEN] .tex BC1 encode failed for '{skin_name}'");
+        return None;
+    };
 
     // Write into <injection mods>/<MOD_NAME>/WAD/<Alias>.wad.client/<inner_tex>.
     let dest = crate::skins::paths::injection_mods_dir()
@@ -213,10 +226,16 @@ pub async fn build(
         .join(format!("{champ_alias}.wad.client"))
         .join(inner_tex.replace('/', std::path::MAIN_SEPARATOR_STR));
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).ok()?;
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log_warn!("[LOADSCREEN] mkdir failed for {}: {e}", parent.display());
+            return None;
+        }
     }
-    std::fs::write(&dest, &tex).ok()?;
-    log_info!("[LOADSCREEN] baked name card '{skin_name}' -> {}", dest.display());
+    if let Err(e) = std::fs::write(&dest, &tex) {
+        log_warn!("[LOADSCREEN] write failed for {}: {e}", dest.display());
+        return None;
+    }
+    log_info!("[LOADSCREEN] baked name card '{skin_name}' ({} bytes) -> {}", tex.len(), dest.display());
     Some(MOD_NAME.to_string())
 }
 
