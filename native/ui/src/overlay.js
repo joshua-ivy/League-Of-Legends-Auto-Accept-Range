@@ -68,6 +68,12 @@ let otherRows = [];        // aggregated across OTHER_CATS, each tagged with its
 let qMap = "";
 let qAnn = "";
 let partyState = null;
+let cardCols = 2;          // overlayCardCols — skin card size tier (1=large … 3=small), persisted per user
+// Min card width per tier — auto-fit wraps to as many full-tile columns as fit
+// (≈1/2/3 across the overlay). A minmax width, NOT a repeat() column count, so
+// cards can never squish into thin strips if the grid re-lays out.
+const CARD_MIN = { 1: "320px", 2: "200px", 3: "135px" };
+function applyCardSize() { document.documentElement.style.setProperty("--sk-min", CARD_MIN[cardCols] || "200px"); }
 
 // Signature of the last render, so the 1.5s poll skips rebuilding the DOM when
 // nothing changed (otherwise it yanks pills/preview out from under the cursor).
@@ -183,6 +189,7 @@ async function tick() {
     newCatMods = (st && st.categoryMods) || { map: null, font: null, announcer: null, others: [] };
     histRestoredId = st ? st.historicRestoredSkinId : null;
     histNote = histRestoredId != null;
+    if (st && st.overlayCardCols) { cardCols = st.overlayCardCols; applyCardSize(); }
   } catch { /* client down — keep last */ }
 
   if (ok && newChamp !== champId) {
@@ -353,6 +360,11 @@ function renderBar() {
   dice.style.display = tab === "skins" ? "" : "none";
   dice.classList.toggle("dis", !champId);
   dice.title = champId ? "Roll a random skin you can inject" : "Lock a champion first";
+  const scz = document.getElementById("skcardsize");
+  if (scz) {
+    scz.style.display = tab === "skins" ? "" : "none";
+    scz.title = "Skin card size: " + (cardCols === 1 ? "large" : cardCols === 3 ? "small" : "medium") + " — click to change";
+  }
 }
 
 function setTabBadge(name, on) {
@@ -674,6 +686,14 @@ document.addEventListener("click", async (e) => {
   const chipEl = e.target.closest(".chip[data-tab]");
   if (chipEl) { tab = chipEl.dataset.tab; render(); return; }
 
+  if (e.target.id === "skcardsize") {
+    cardCols = cardCols === 1 ? 2 : cardCols === 2 ? 3 : 1;
+    applyCardSize();
+    const scz = document.getElementById("skcardsize");
+    if (scz) scz.title = "Skin card size: " + (cardCols === 1 ? "large" : cardCols === 3 ? "small" : "medium") + " — click to change";
+    try { await invoke("skins_set_overlay_card_cols", { cols: cardCols }); } catch {}
+    return;
+  }
   if (e.target.id === "dice") {
     if (!champId) return;
     try { const r = await invoke("skins_roll_random", { championId: champId }); if (r) { randomId = r.skinId; histNote = false; } } catch {}

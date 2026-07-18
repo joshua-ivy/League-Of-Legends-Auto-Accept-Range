@@ -553,6 +553,7 @@ fn skins_snapshot(state: &AppState) -> serde_json::Value {
     };
     json!({
         "enabled": cfg.enabled,
+        "overlayCardCols": cfg.overlay_card_cols,
         // Versioned backend consent (P0-A): the UI unlocks skins actions only
         // off ackOk, and the backend policy enforces it regardless.
         "ackOk": ack_version >= safety_manager::CURRENT_SKINS_ACK_VERSION,
@@ -581,6 +582,20 @@ fn skins_snapshot(state: &AppState) -> serde_json::Value {
 #[tauri::command]
 fn skins_get_state(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     skins_snapshot(&state)
+}
+
+/// Persist the overlay skin-grid column count (1 = large cards … 3 = small).
+/// Clamped to 1..=3 so a bad value can't break the grid layout.
+#[tauri::command]
+fn skins_set_overlay_card_cols(cols: u8, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    let cols = cols.clamp(1, 3);
+    {
+        let mut cfg = state.config.lock_safe();
+        cfg.skins.overlay_card_cols = cols;
+        let _ = cfg.save();
+    }
+    state.config_gen.fetch_add(1, Ordering::SeqCst);
+    json!({ "cols": cols })
 }
 
 /// Persist a partial `SkinsCfg` update (only the keys present are applied —
@@ -2328,6 +2343,7 @@ pub fn run() {
             save_config,
             get_profile,
             skins_get_state,
+            skins_set_overlay_card_cols,
             skins_save_settings,
             skins_set_ack,
             skins_open_cslol_dir,

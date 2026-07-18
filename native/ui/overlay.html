@@ -68,7 +68,7 @@
     .tabinner { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
     /* Skins grid (existing, unchanged) */
-    #grid { flex: 1; overflow-y: auto; padding: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-content: start; }
+    #grid { flex: 1; overflow-y: auto; padding: 8px; display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--sk-min, 200px), 1fr)); grid-auto-rows: max-content; gap: 8px; align-content: start; }
     #grid::-webkit-scrollbar, .listwrap::-webkit-scrollbar { width: 8px; }
     #grid::-webkit-scrollbar-thumb, .listwrap::-webkit-scrollbar-thumb { background: #1b2a44; border-radius: 8px; }
     .empty { grid-column: 1 / -1; color: #7a93a8; text-align: center; padding: 30px 10px; font-size: 13px; }
@@ -210,6 +210,7 @@
     <div class="bar" data-tauri-drag-region>
       <span class="dot"></span><span class="ttl">Chud</span>
       <span class="champ" id="champ">Lock a champion…</span>
+      <button class="dice" id="skcardsize" title="Skin card size" style="display:none">▦</button>
       <button class="dice" id="dice" title="Roll a random skin you can inject">🎲</button>
       <button class="tbtn" id="collapse" title="Collapse to launcher">▾</button>
       <button class="x" id="close" title="Hide">×</button>

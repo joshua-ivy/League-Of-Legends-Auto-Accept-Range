@@ -87,6 +87,9 @@ pub struct SkinsCfg {
     /// handshake and wedged the session until reboot; 25s still covers the
     /// slowest legitimate overlay builds.
     pub monitor_auto_resume_timeout_secs: f64,
+    /// Overlay skin-grid column count (1 = large cards … 3 = small). Persisted
+    /// so the user's chosen card size sticks across games and restarts.
+    pub overlay_card_cols: u8,
 }
 
 impl Default for SkinsCfg {
@@ -98,6 +101,7 @@ impl Default for SkinsCfg {
             auto_download_skins: true,
             party_relay_url: String::new(),
             monitor_auto_resume_timeout_secs: 25.0,
+            overlay_card_cols: 2,
         }
     }
 }
