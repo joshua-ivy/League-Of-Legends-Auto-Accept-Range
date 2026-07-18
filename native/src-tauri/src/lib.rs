@@ -579,6 +579,7 @@ fn skins_snapshot(state: &AppState) -> serde_json::Value {
         "injectionThresholdMs": cfg.injection_threshold_ms,
         "autoResumeSecs": cfg.monitor_auto_resume_timeout_secs,
         "autoDownload": cfg.auto_download_skins,
+        "loadscreenLabels": cfg.loadscreen_labels,
         "party": party,
         "currentChampId": current_champ,
         "currentPickSkinId": current_pick,
@@ -630,6 +631,9 @@ fn skins_save_settings(settings: serde_json::Value, state: tauri::State<Arc<AppS
         }
         if let Some(v) = settings.get("auto_download_skins").and_then(|v| v.as_bool()) {
             cfg.skins.auto_download_skins = v;
+        }
+        if let Some(v) = settings.get("loadscreen_labels").and_then(|v| v.as_bool()) {
+            cfg.skins.loadscreen_labels = v;
         }
         if let Some(v) = settings.get("party_relay_url").and_then(|v| v.as_str()) {
             cfg.skins.party_relay_url = v.to_string();

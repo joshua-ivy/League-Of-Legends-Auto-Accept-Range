@@ -90,6 +90,10 @@ pub struct SkinsCfg {
     /// Overlay skin-grid column count (1 = large cards … 3 = small). Persisted
     /// so the user's chosen card size sticks across games and restarts.
     pub overlay_card_cols: u8,
+    /// Bake the skin's name onto its loading-screen card (the game shows none).
+    /// Best-effort cosmetic overlay folded into the injection; a failure never
+    /// blocks the skin itself.
+    pub loadscreen_labels: bool,
 }
 
 impl Default for SkinsCfg {
@@ -102,6 +106,7 @@ impl Default for SkinsCfg {
             party_relay_url: String::new(),
             monitor_auto_resume_timeout_secs: 25.0,
             overlay_card_cols: 2,
+            loadscreen_labels: true,
         }
     }
 }

@@ -240,7 +240,13 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
 
     // Stage party-member skins now (cleans the mods dir first so they survive)
     // and fold them into the overlay for both the owned and unowned paths.
-    let party_folders = stage_party_mods(&party_mgr).await;
+    let mut party_folders = stage_party_mods(&party_mgr).await;
+    // Bake the skin-name card onto the loadscreen. `stage_party_mods` only
+    // cleaned the mods dir when it had peers to stage, so tell the helper whether
+    // that clean already happened.
+    if let Some(card) = stage_loadscreen_card(&app, ui_skin_id, champ_id, !party_folders.is_empty()).await {
+        party_folders.push(card);
+    }
 
     // Force owned skins/chromas via LCU (still runs injection afterward so the
     // overlay is built with any party/category mods). A chroma must be owned in
@@ -280,6 +286,43 @@ async fn stage_party_mods(party_mgr: &Option<Arc<crate::skins::party::manager::P
         log_info!("[INJECT] Staged {} party-member skin(s) for the overlay", staged.len());
     }
     staged
+}
+
+/// Bake `skin_id`'s name onto its loadscreen card and stage it as an overlay
+/// mod, returning the mod folder name to fold into the overlay. Gated by
+/// `skins.loadscreen_labels`; best-effort — any miss (feature off, no LCU data,
+/// network down) returns `None` and the skin just injects unlabeled.
+///
+/// The card must land in an already-cleaned mods dir. `mods_dir_clean` tells the
+/// helper the caller has NOT cleaned yet (no party staging happened), so it
+/// cleans before writing — otherwise the primary-skin extract that follows would
+/// see non-empty extras, skip its own clean, and leak stale mods.
+async fn stage_loadscreen_card(
+    app: &AppHandle,
+    ui_skin_id: Option<i64>,
+    champ_id: Option<i64>,
+    mods_dir_clean: bool,
+) -> Option<String> {
+    let skin_id = ui_skin_id.filter(|&id| id != 0)?;
+    let champ_id = champ_id?;
+    let (enabled, allowed) = {
+        let app_state = app.state::<Arc<AppState>>();
+        let cfg = app_state.config.lock_safe();
+        (cfg.skins.loadscreen_labels, crate::net::allowed_origins(&cfg))
+    };
+    if !enabled {
+        return None;
+    }
+    let auth = lcu::cached_auth()?;
+    let lcu_client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
+    let (alias, skin_name) = lcu_ext::loadscreen_target(&lcu_client, &auth, champ_id, skin_id).await?;
+
+    // Committed to writing the card — ensure the mods dir is clean first.
+    if !mods_dir_clean {
+        storage::clean_mods_dir(&paths::injection_mods_dir());
+    }
+    let http = crate::net::build_external_client(15.0, allowed.clone());
+    crate::skins::features::loadscreen_label::build(skin_id, &skin_name, &alias.to_lowercase(), &alias, &http, &allowed).await
 }
 
 fn log_trigger_summary(ticker_id: u64, name: &str, custom_mod: Option<&CustomModSelection>, category_mods: &CategoryModSelections) {
@@ -572,6 +615,17 @@ async fn run_custom_mod_injection(
     }
 
     let champion_id = if custom_mod.champion_id != 0 { Some(custom_mod.champion_id) } else { None };
+
+    // Loadscreen name card for an OFFICIAL skin shown alongside category mods
+    // (map/font/announcer). Skipped when a custom skin folder is present — that
+    // art isn't an official skin, so no CommunityDragon loadscreen matches it.
+    // The mods dir was already cleaned at the top of this function.
+    if !has_custom_skin_folder {
+        if let Some(card) = stage_loadscreen_card(app, user_skin_id, champion_id, true).await {
+            extra_names.push(card);
+            labels.push("Loadscreen name".to_string());
+        }
+    }
 
     // Force the champion's base skin via the LCU when the overlay's assets are
     // keyed to it: the explicit unowned base path (`base_skin_name`), OR any real

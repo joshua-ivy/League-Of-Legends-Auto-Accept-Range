@@ -512,6 +512,7 @@ async function loadSkinsState() {
     injection_threshold_ms: skinsState.injectionThresholdMs,
     monitor_auto_resume_timeout_secs: skinsState.autoResumeSecs,
     auto_download_skins: !!skinsState.autoDownload,
+    loadscreen_labels: skinsState.loadscreenLabels !== false,
   };
 }
 
@@ -593,6 +594,7 @@ function skinsSettingsCard() {
       ${setField("Injection threshold", "How close to the loadout deadline to inject", skinsNumInput("injection_threshold_ms", "ms", "1"))}
       ${setField("Auto-resume timeout", "Never leave the client suspended longer than this", skinsNumInput("monitor_auto_resume_timeout_secs", "s"))}
       ${setField("Auto-download skins", "Fetch new skins/hashes automatically on launch", skinsToggleCtl("auto_download_skins"))}
+      ${setField("Loadscreen skin names", "Bake the skin's name onto its loading-screen card (the game shows none)", skinsToggleCtl("loadscreen_labels"))}
     </div>
     <div class="row" style="margin-top:4px"><button class="btn primary" id="skinsSaveCfg">Save settings</button><span class="dim mono" id="skinsSaveHint" style="font-size:11.5px"></span></div>
   </div>`;

@@ -26,21 +26,42 @@ const CARD_H: u32 = 560;
 /// Folder name of the generated overlay mod (single-slot; rebuilt each pick).
 pub const MOD_NAME: &str = "chud_loadscreen";
 
-/// Windows-bundled fonts we can load at runtime (the user's own font — no
-/// redistribution), heaviest-first for a bold loadscreen label.
-const FONT_CANDIDATES: [&str; 3] = ["segoeuib.ttf", "arialbd.ttf", "segoeui.ttf"];
+/// Riot's actual League display font — the same "Beaufort for LOL" bold used for
+/// champion/skin names in-client, so the baked card matches the game's own type.
+/// It's proprietary, so we do NOT bundle it: we fetch the game asset from
+/// CommunityDragon (same host/posture as the loadscreen art) and cache it on
+/// disk, loading from cache on every subsequent card.
+const RIOT_FONT_FILE: &str = "beaufortforlol-bold.otf";
+const RIOT_FONT_URL: &str = "https://raw.communitydragon.org/latest/game/assets/ux/fonts/beaufortforlol-bold.otf";
 
-fn load_font() -> Option<FontVec> {
-    let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:/Windows".into());
-    for name in FONT_CANDIDATES {
-        let p = PathBuf::from(&root).join("Fonts").join(name);
-        if let Ok(bytes) = std::fs::read(&p) {
-            if let Ok(font) = FontVec::try_from_vec(bytes) {
-                return Some(font);
-            }
+fn font_cache_path() -> PathBuf {
+    crate::skins::paths::data_root().join("cache").join("fonts").join(RIOT_FONT_FILE)
+}
+
+/// Load Riot's loadscreen font: from the on-disk cache if present, otherwise
+/// fetch it once from CommunityDragon and cache it. `None` on any failure
+/// (network down, parse error) so the caller falls back to no label — never a
+/// wrong font.
+async fn load_riot_font(http: &reqwest::Client, allowed: &HashSet<String>) -> Option<FontVec> {
+    let cache = font_cache_path();
+    if let Ok(bytes) = std::fs::read(&cache) {
+        if let Ok(font) = FontVec::try_from_vec(bytes) {
+            return Some(font);
         }
     }
-    None
+    let bytes = match crate::net::get_bytes_checked(http, RIOT_FONT_URL, allowed, 4 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(e) => {
+            log_warn!("[LOADSCREEN] Riot font fetch failed ({RIOT_FONT_URL}): {e}");
+            return None;
+        }
+    };
+    // Cache best-effort; a write failure just means we refetch next time.
+    if let Some(parent) = cache.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&cache, &bytes);
+    FontVec::try_from_vec(bytes).ok()
 }
 
 /// CommunityDragon URL + the in-WAD `.tex` path for a skin's loadscreen card.
@@ -58,13 +79,21 @@ fn loadscreen_paths(champ_key: &str, num: i64) -> (String, String) {
     }
 }
 
-/// Draw `name` across the bottom of the card: a dark gradient scrim so text is
-/// legible over any splash, then the name centered with a hard shadow.
+/// Draw `name` near the lower third of the card: a dark gradient scrim so text
+/// is legible over any splash, then the name centered with a hard shadow. The
+/// text baseline sits well above the bottom edge — the in-game loadscreen frame
+/// and summoner-name bar overlap the card's bottom ~12%, which would clip a
+/// bottom-anchored label.
 fn draw_skin_name(img: &mut RgbaImage, font: &FontVec, name: &str) {
-    // Bottom scrim — fade a translucent black band up from the bottom edge.
-    let band_h = (CARD_H as f32 * 0.22) as u32;
-    for y in (CARD_H - band_h)..CARD_H {
-        let t = (y - (CARD_H - band_h)) as f32 / band_h as f32; // 0 at top of band → 1 at bottom
+    // Fraction of the card height reserved below the text for the game's frame.
+    const BOTTOM_INSET: f32 = 0.14;
+    let bottom = (CARD_H as f32 * (1.0 - BOTTOM_INSET)) as u32; // text sits at/above here
+    // Scrim: fade a translucent black band up to `bottom` so the raised text
+    // still reads over a bright splash.
+    let band_h = (CARD_H as f32 * 0.24) as u32;
+    let band_top = bottom.saturating_sub(band_h);
+    for y in band_top..bottom {
+        let t = (y - band_top) as f32 / band_h as f32; // 0 at band top → 1 at band bottom
         let a = (t * t * 200.0) as u16; // ease-in, up to ~0.78 alpha
         for x in 0..CARD_W {
             let px = img.get_pixel_mut(x, y);
@@ -81,7 +110,7 @@ fn draw_skin_name(img: &mut RgbaImage, font: &FontVec, name: &str) {
     }
     let tw = text_width(font, size, name);
     let x = ((CARD_W as f32 - tw) / 2.0).max(6.0);
-    let y = CARD_H as f32 - size - 14.0;
+    let y = bottom as f32 - size - 6.0; // baseline sits just inside the safe area
     // Hard shadow then the fill.
     draw_text(img, font, name, x + 1.5, y + 1.5, size, Rgba([0, 0, 0, 220]));
     draw_text(img, font, name, x, y, size, Rgba([255, 255, 255, 255]));
@@ -169,7 +198,7 @@ pub async fn build(
             return None;
         }
     };
-    let font = load_font()?;
+    let font = load_riot_font(http, allowed).await?;
     let mut img = image::load_from_memory(&png).ok()?.to_rgba8();
     if img.width() != CARD_W || img.height() != CARD_H {
         img = image::imageops::resize(&img, CARD_W, CARD_H, image::imageops::FilterType::Lanczos3);
@@ -195,8 +224,10 @@ pub async fn build(
 mod tests {
     use super::*;
 
-    // Manual proof (needs network + a Windows font): fetches Aatrox's base
-    // loadscreen, bakes a long skin name, encodes .tex, and checks the header.
+    // Manual proof (needs network): fetches Aatrox's base loadscreen + Riot's
+    // real Beaufort font from CommunityDragon, bakes a long skin name, encodes
+    // .tex, and checks the header. Also confirms the OTF/CFF font actually
+    // rasterizes glyphs (non-empty outline) under ab_glyph.
     // Run with: cargo test --lib loadscreen_proof -- --ignored --nocapture
     #[tokio::test]
     #[ignore]
@@ -204,7 +235,11 @@ mod tests {
         let http = reqwest::Client::new();
         let (url, _) = loadscreen_paths("aatrox", 0);
         let png = http.get(&url).send().await.unwrap().bytes().await.unwrap().to_vec();
-        let font = load_font().expect("a Windows font");
+        let fb = http.get(RIOT_FONT_URL).send().await.unwrap().bytes().await.unwrap().to_vec();
+        let font = FontVec::try_from_vec(fb).expect("Riot Beaufort OTF parses");
+        // The name must actually rasterize under ab_glyph (CFF outlines present).
+        let g = font.glyph_id('A').with_scale(48.0);
+        assert!(font.outline_glyph(g).map(|o| o.px_bounds().width() > 0.0).unwrap_or(false), "Beaufort 'A' rasterizes");
         let mut img = image::load_from_memory(&png).unwrap().to_rgba8();
         img = image::imageops::resize(&img, CARD_W, CARD_H, image::imageops::FilterType::Lanczos3);
         draw_skin_name(&mut img, &font, "Battle Queen Katarina");
