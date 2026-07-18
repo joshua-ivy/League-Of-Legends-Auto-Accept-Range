@@ -24,7 +24,7 @@
 
 Every other tool in this space cuts the same corners. These exist **nowhere else**:
 
-- 🧬 **No mod-loader in your League client.** Rose, Pengu, R3nzSkin and the rest inject a loader *into the Riot client itself*. Chud doesn't — it drives everything from its own window using Riot's official local API. The whole client-side injection layer — the riskiest, most fragile part of every other changer — simply isn't there. (Why it's safer & more reliable ↓)
+- 🧬 **No mod-loader in your League client.** Rose (via Pengu Loader), R3nzSkin and the rest run a client-side loader that hooks *into the Riot client itself*. Chud doesn't — it drives everything from its own window using Riot's official local API. That whole client-side layer — the most *fragile* part of every other changer, the bit that breaks on patch day — simply isn't there. (Details ↓)
 - 🛡️ **A malware scanner for the mods themselves** — nobody else scans a skin before you run it. Chud does, in memory, before it hits disk.
 - 🎙️ **Build your own announcer** — turn any clip or your own mic into a real League announcer pack. No Wwise, no external tools.
 - 🤝 **Zero-identity party sync** — sync skins with your lobby with no summoner IDs on the wire and cryptographically signed selections. Everyone else needs manual tokens and broadcasts your account in the clear.
@@ -35,11 +35,11 @@ Details below.
 
 ---
 
-## 🧬 Skins done differently — safer, and it doesn't break on patch day
+## 🧬 Skins done differently — no client mod-loader, and it doesn't break on patch day
 
 Every League skin changer does **two** separate things. Understanding the split is the whole story:
 
-1. **The picker** — how you choose a skin. Rose, Pengu Loader, R3nzSkin and friends do this by **injecting a mod-loader into the League client** (hooking its CEF UI, loading `.dll`s into `LeagueClientUx`) so they can draw menus *inside* Riot's client.
+1. **The picker** — how you choose a skin. Rose (through Pengu Loader), R3nzSkin and friends do this with a **mod-loader running inside the League client** (hooking its CEF UI, loading into `LeagueClientUx`) so they can draw menus *inside* Riot's client.
 2. **The skin overlay** — how the skin actually shows up in-game. This is a cosmetic file overlay applied to the *game* (via [cslol](https://github.com/LeagueToolkit/cslol-manager)). Everyone uses it, Chud included.
 
 **Chud threw out #1 entirely.** There is **no loader, no client hooks, nothing injected into or modifying the Riot client**. Instead Chud:
@@ -47,15 +47,16 @@ Every League skin changer does **two** separate things. Understanding the split 
 - reads the **official LCU API** (the same localhost API Riot exposes for tools like OP.GG, Blitz, and Mobalytics), and
 - shows its **own floating overlay** over champ select — a normal always-on-top window, the same thing any stream overlay does.
 
-### Why that's safer
+### What dropping the loader actually gets you
 
-Client-side injection is exactly the surface Riot's **Vanguard** anti-cheat is built to watch — and it's why loaders as a category keep **dying** (R3nzSkin shut down in 2024; others follow every time Riot tightens the screws). Chud removes that surface completely: it never touches the Riot client process.
+Let's be precise, because it's easy to overclaim here: **removing the client loader is not a ban-safety upgrade.** The client-side plugin layer (Pengu Loader, which Rose and others build on) is UI modding — it's coexisted with League for years and generally isn't what gets accounts actioned. The real risk in *any* skin changer is the **in-game cosmetic overlay (cslol)** — and Chud uses that same overlay, so on ban risk it's **no safer than Rose or the rest**.
 
-**Honest about what's left:** the in-game cosmetic overlay (cslol) is the one part every changer shares, and it carries the inherent risk any skin mod does. Chud doesn't pretend that part is magic — it removes the *other*, riskier layer, not this one. **No skin changer is "ban-proof," and Chud makes no such claim** (see the ⚠️ risk note below).
+What dropping the loader *does* buy is **reliability and a smaller footprint:**
 
-### Why that's more reliable
+- **It doesn't break on patch day.** A loader hooks the client's CEF internals, which Riot changes constantly, so loaders break and need endless upkeep. Chud is driven by **official champ-select events** instead, so a client patch doesn't change how you pick skins.
+- **It never modifies Riot's client.** No client files patched, no `.dll` in `LeagueClientUx`, no loader to install or keep updated — Chud runs in its own window off Riot's **official local API** (the same one OP.GG, Blitz, and Mobalytics use).
 
-A loader hooks the client's internals — which Riot ships changes to constantly — so loaders **break on patch day** and need endless maintenance. Chud's picker is driven entirely by **official champ-select events**, not by scraping or hooking a client UI, so a client patch doesn't break how you pick skins. Combined with a **fail-closed injection policy** (below) and the **always-on ranked kill-switch**, the whole pipeline is built to *deny and keep working* rather than break or misfire.
+Combined with a **fail-closed injection policy** and the **always-on ranked kill-switch** (below), the pipeline is built to *deny and keep working* rather than misfire. But **no skin changer is "ban-proof," and Chud makes no such claim** — the in-game overlay carries the same inherent risk as every changer; see the ⚠️ note below.
 
 ---
 
@@ -123,9 +124,8 @@ Chud's ranked kill-switch runs **always** — a background monitor that refuses 
 
 Chud changes skins by **applying a cosmetic file overlay to the game**, and Auto-Range **synthesizes keyboard input**. **Riot's Vanguard anti-cheat can detect this and ban your account** — a real risk with any skin changer or input tool for League.
 
-Chud operates **openly**: there is no anti-cheat evasion, and none will ever be added. What it does *not* do is inject into or modify the Riot **client** the way loader-based changers do — but the in-game skin overlay is still a mod, and mods carry risk. Its safeguards reduce risk without removing it:
+Chud operates **openly**: there is no anti-cheat evasion, and none will ever be added. Unlike loader-based changers it doesn't modify the Riot **client** — but that's about staying off patch-day breakage and not touching Riot's client, **not** a claim that it lowers the in-game ban risk. The in-game overlay is still a mod, and mods carry risk. What genuinely reduces (not removes) that risk:
 
-- 🧬 **No client injection** — Chud never hooks or modifies `LeagueClientUx`; it only reads Riot's official local API and shows its own window.
 - 🔒 **Always-on ranked kill-switch** — injection is refused in any confirmed ranked or unverifiable game.
 - ✋ **Versioned consent gate** — the riskier tools stay locked until you accept the risk; the disclosure is versioned, so a material change re-prompts.
 - 🛡️ **ModScan** — malicious mods are blocked before they reach disk.
@@ -141,7 +141,7 @@ Chud operates **openly**: there is no anti-cheat evasion, and none will ever be 
 
 Chud is a **ground-up rewrite in Rust + Tauri 2** — a single, self-contained, self-updating `.exe` rather than a Python app with a runtime. A few deliberate choices:
 
-**Injection-free client.** Skin picking is a native Tauri overlay window plus Riot's official LCU API — no CEF plugin, no loader, no code injected into the League client. The engine watches official champ-select/gameflow events over a websocket and applies the cosmetic overlay to the game via cslol at the loadout deadline. Removing the client loader removed a whole class of both detection surface and patch-day breakage.
+**Injection-free client.** Skin picking is a native Tauri overlay window plus Riot's official LCU API — no CEF plugin, no loader, no code injected into the League client. The engine watches official champ-select/gameflow events over a websocket and applies the cosmetic overlay to the game via cslol at the loadout deadline. Removing the client loader removed a whole class of patch-day breakage and dropped any need to modify Riot's client — not a change to the in-game injection risk, which is unchanged and shared with every changer.
 
 **Injection safety is a fail-closed policy engine.** Every side effect — building the overlay, suspending the game process, patching a skin selection via the client API, and starting the hook — is gated by one `evaluate_injection_policy()` call immediately before it runs. The policy reads only live backend state (skins enabled, versioned consent, an always-on gameflow monitor, tool presence) and denies with a typed reason (`RANKED_QUEUE`, `CONSENT_MISSING`, `WRONG_PHASE`, `INTEGRITY_FAILED`, …) that the UI surfaces verbatim. A stale monitor or an unwired gate denies rather than allows.
 
