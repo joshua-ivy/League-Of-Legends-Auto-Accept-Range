@@ -315,12 +315,10 @@ fn save_config(cfg: serde_json::Value, app: AppHandle, state: tauri::State<Arc<A
                 // that snapshot goes stale the moment the user flips a control
                 // saved by a DEDICATED command — the Library beta toggle
                 // (`set_library_enabled`), appear-offline (`set_appear_offline`),
-                // client declutter (`skins_set_customization`), or the Skins
-                // page (`skins_save_settings`). A blind `*c = parsed` would
-                // silently revert those. Preserve the dedicated-command sections
-                // from the live config so a general save never clobbers them.
+                // or the Skins page (`skins_save_settings`). A blind `*c = parsed`
+                // would silently revert those. Preserve the dedicated-command
+                // sections from the live config so a general save never clobbers them.
                 parsed.library = c.library.clone();
-                parsed.client = c.client.clone();
                 parsed.presence = c.presence.clone();
                 parsed.skins = c.skins.clone();
                 *c = parsed;
@@ -550,6 +548,7 @@ fn skins_snapshot(state: &AppState) -> serde_json::Value {
             "consent_ok": party_cfg.consent_version >= skins::party::manager::CURRENT_PARTY_CONSENT_VERSION,
             "consent_required_version": skins::party::manager::CURRENT_PARTY_CONSENT_VERSION,
             "auto_download_peer_announcers": party_cfg.auto_download_peer_announcers,
+            "auto_download_peer_custom_mods": party_cfg.auto_download_peer_custom_mods,
         }),
     };
     json!({
@@ -694,28 +693,6 @@ fn skins_set_enabled(enabled: bool, state: tauri::State<Arc<AppState>>) -> serde
     }
     state.config_gen.fetch_add(1, Ordering::SeqCst);
     skins_snapshot(&state)
-}
-
-/// In-client declutter/customization config (read by the CHUD-Declutter plugin
-/// via the bridge). Returns the current toggles.
-#[tauri::command]
-fn skins_get_customization(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
-    serde_json::to_value(state.config.lock_safe().client.clone()).unwrap_or_else(|_| json!({}))
-}
-
-/// Persist the in-client declutter toggles. The CHUD-Declutter plugin polls the
-/// bridge and re-applies within a few seconds; no client restart needed.
-#[tauri::command]
-fn skins_set_customization(customization: serde_json::Value, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
-    {
-        let mut cfg = state.config.lock_safe();
-        if let Ok(parsed) = serde_json::from_value::<config::ClientCustomization>(customization) {
-            cfg.client = parsed;
-        }
-        let _ = cfg.save();
-    }
-    state.config_gen.fetch_add(1, Ordering::SeqCst);
-    serde_json::to_value(state.config.lock_safe().client.clone()).unwrap_or_else(|_| json!({}))
 }
 
 /// The browsable skin catalog (every champ + its skins, flagged downloaded) for
@@ -1318,6 +1295,7 @@ fn skins_party_fallback_state(state: &AppState) -> serde_json::Value {
         "consent_ok": c.party.consent_version >= skins::party::manager::CURRENT_PARTY_CONSENT_VERSION,
         "consent_required_version": skins::party::manager::CURRENT_PARTY_CONSENT_VERSION,
         "auto_download_peer_announcers": c.party.auto_download_peer_announcers,
+        "auto_download_peer_custom_mods": c.party.auto_download_peer_custom_mods,
     })
 }
 
@@ -1405,6 +1383,20 @@ fn skins_party_set_auto_announcers(enabled: bool, state: tauri::State<Arc<AppSta
     {
         let mut cfg = state.config.lock_safe();
         cfg.party.auto_download_peer_announcers = enabled;
+        let _ = cfg.save();
+    }
+    state.config_gen.fetch_add(1, Ordering::SeqCst);
+    match state.skins_party.lock_safe().as_ref() {
+        Some(party) => party.get_state(),
+        None => skins_party_fallback_state(&state),
+    }
+}
+
+#[tauri::command]
+fn skins_party_set_auto_custom_mods(enabled: bool, state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    {
+        let mut cfg = state.config.lock_safe();
+        cfg.party.auto_download_peer_custom_mods = enabled;
         let _ = cfg.save();
     }
     state.config_gen.fetch_add(1, Ordering::SeqCst);
@@ -2341,8 +2333,6 @@ pub fn run() {
             skins_open_cslol_dir,
             skins_download,
             skins_set_enabled,
-            skins_get_customization,
-            skins_set_customization,
             skins_catalog,
             skins_get_favorites,
             skins_set_favorite,
@@ -2370,6 +2360,7 @@ pub fn run() {
             skins_party_get_state,
             skins_party_set_consent,
             skins_party_set_auto_announcers,
+            skins_party_set_auto_custom_mods,
             runes_import_now,
             set_appear_offline,
             get_appear_offline,

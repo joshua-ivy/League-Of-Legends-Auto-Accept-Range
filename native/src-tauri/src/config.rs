@@ -130,58 +130,6 @@ impl Default for Runes {
     }
 }
 
-/// In-client declutter/ad-remover toggles. Retained in config for
-/// forward-compatibility, but no longer delivered to the client: the
-/// `CHUD-Declutter` plugin + its Pengu bridge were removed in the injection-free
-/// rebuild. Every option defaults OFF; nothing consumes these today.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ClientCustomization {
-    /// Master switch — when false the plugin removes all its injected CSS.
-    pub enabled: bool,
-    /// Hide the Store nav tab.
-    pub hide_store: bool,
-    /// Hide the Loot nav tab.
-    pub hide_loot: bool,
-    /// Hide the missions button / progression widget on the home screen.
-    pub hide_missions: bool,
-    /// Hide the battle-pass progression widget.
-    pub hide_pass: bool,
-    /// Hide promo deep-links and the Riot Discord banner (ads).
-    pub hide_promos: bool,
-    /// Hide the "buy RP / top up" nudge on the currency counter.
-    pub hide_rp_topup: bool,
-    /// Hide challenge/lobby banners.
-    pub hide_challenges: bool,
-    /// Hide the event countdown timer in the game-select bar.
-    pub hide_event_timers: bool,
-    /// Hide the animated video background on the play/home screen.
-    pub hide_home_video: bool,
-    /// Notification DND — hide attention-nag pips/badges across the client.
-    pub hide_notif_badges: bool,
-    /// Queue Arena minigame while searching for a match; independent of `enabled`.
-    pub queue_arena: bool,
-}
-
-impl Default for ClientCustomization {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            hide_store: false,
-            hide_loot: false,
-            hide_missions: false,
-            hide_pass: false,
-            hide_promos: false,
-            hide_rp_topup: false,
-            hide_challenges: false,
-            hide_event_timers: false,
-            hide_home_video: false,
-            hide_notif_badges: false,
-            queue_arena: true,
-        }
-    }
-}
-
 /// Chat presence override. When `appear_offline` is on, sets League chat
 /// availability to `offline` and re-asserts it (the client resets availability on
 /// some gameflow events). Off by default. Pure LCU write, no Vanguard surface.
@@ -259,7 +207,7 @@ pub struct Network {
 /// versioned data-sharing consent is accepted — no relay connection before opt-in.
 /// Transmission details are in `docs/PRIVACY-PARTY.md`; bumping the consent
 /// version in `party::manager` re-gates everyone when the disclosure changes.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Party {
     /// User's persisted on/off choice. Consent is checked independently —
@@ -271,6 +219,22 @@ pub struct Party {
     /// Auto-download announcer packs peers advertise (verified against the
     /// Library catalog first). Off by default — needs its own opt-in.
     pub auto_download_peer_announcers: bool,
+    /// Auto-download the custom `.fantome` a peer picks — content-addressed via
+    /// the skins worker, then ModScan-gated before it's ever trusted. ON by
+    /// default so custom skins sync out of the box; the scan is the guard, and
+    /// a flagged file is never installed.
+    pub auto_download_peer_custom_mods: bool,
+}
+
+impl Default for Party {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            consent_version: 0,
+            auto_download_peer_announcers: false,
+            auto_download_peer_custom_mods: true,
+        }
+    }
 }
 
 /// Anonymous usage telemetry. ON by default. Sends only a per-UTC-day rotating
@@ -297,7 +261,6 @@ pub struct Config {
     pub safety: Safety,
     pub skins: SkinsCfg,
     pub runes: Runes,
-    pub client: ClientCustomization,
     pub presence: Presence,
     pub library: Library,
     pub network: Network,

@@ -478,7 +478,7 @@ const DEFAULT_SKINS_STATE = {
   enabled: false, ackOk: false, ackVersion: 0, ackRequiredVersion: 1, policy: null,
   skinsDownloaded: false, hashesReady: false,
   leaguePath: "", injectionThresholdMs: 300, autoResumeSecs: 25, autoDownload: true,
-  party: { enabled: false, my_token: null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [], consent_ok: false, consent_required_version: 1, auto_download_peer_announcers: false },
+  party: { enabled: false, my_token: null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [], consent_ok: false, consent_required_version: 1, auto_download_peer_announcers: false, auto_download_peer_custom_mods: false },
   diagnostics: { toolsAvailable: false, dllValid: false, skinsDownloaded: false, hashesReady: false, dataDir: "" },
 };
 let skinsState = null;
@@ -617,6 +617,7 @@ function skinsPartyCardInner() {
     <div class="set-list">
       ${setField("Enable party mode", "Share your skin picks with your lobby in real time", `<div class="tog ${p.enabled ? "on" : ""}" id="skinsPartyToggle"><div class="knob"></div></div>`)}
       ${setField("Auto-download peer announcer packs", "Fetch a teammate's announcer pack automatically — still verified against the Library catalog first", `<div class="tog ${p.auto_download_peer_announcers ? "on" : ""}" id="skinsPartyAutoAnnouncers"><div class="knob"></div></div>`)}
+      ${setField("Auto-download peer custom skins", "Fetch a teammate's custom skin automatically — every file is malware-scanned before it's used", `<div class="tog ${p.auto_download_peer_custom_mods ? "on" : ""}" id="skinsPartyAutoCustomMods"><div class="knob"></div></div>`)}
     </div>
     ${p.enabled ? `
     <div class="set-field" style="align-items:flex-start">
@@ -673,7 +674,7 @@ const skinTileUrl = (skinId) => `https://cdn.communitydragon.org/latest/champion
 
 function skinsFavoritesCardInner() {
   const title = `<div class="set-card-title"><span class="ci">${ico("skin")}</span>Favorite Skins</div>
-    <div class="dim" style="font-size:12px;margin:-4px 0 10px">Pick a go-to skin per champion. Chud auto-applies it every game you play them — no in-client hovering. A manual pick in the client still wins for that game.</div>`;
+    <div class="dim" style="font-size:12px;margin:-4px 0 10px">Pick a go-to skin per champion. Chud auto-applies it every game you play them — no need to open the overlay. A manual pick in the overlay still wins for that game.</div>`;
 
   if (skinsCatalog === null) return `${title}<div class="dim" style="padding:8px 2px">Loading champions…</div>`;
   if (!skinsCatalog.length)
@@ -753,7 +754,7 @@ function bindFavListEvents() {
     const champ = parseInt(el.dataset.favClear, 10);
     skinsFavorites = await invoke("skins_set_favorite", { champId: champ, skinId: null });
     rerenderFavCard();
-    toast("Favorite cleared", "That champion will use whatever you pick in-client.", "neutral");
+    toast("Favorite cleared", "That champion will use whatever you pick in the overlay.", "neutral");
   });
   document.querySelectorAll("[data-fav-skin]").forEach((el) => el.onclick = async () => {
     if (el.dataset.dl !== "1") { toast("Not downloaded", "That skin isn't downloaded, so it can't be injected. Download skins in Setup.", "warning"); return; }
@@ -761,61 +762,9 @@ function bindFavListEvents() {
     const already = skinsFavorites[String(champ)] === skin;
     skinsFavorites = await invoke("skins_set_favorite", { champId: champ, skinId: already ? null : skin });
     rerenderFavCard();
-    toast(already ? "Favorite cleared" : "Favorite set", already ? "Back to in-client picks for this champ." : `${favSkinNameFor(champ, skin)} will auto-apply every game.`, "success");
+    toast(already ? "Favorite cleared" : "Favorite set", already ? "Back to overlay picks for this champ." : `${favSkinNameFor(champ, skin)} will auto-apply every game.`, "success");
   });
 }
-
-// ── Pick-this-game card (injection-free per-game override, no in-client wheel) ──
-function skinPickCardInner() {
-  const champId = (skinsState && skinsState.currentChampId) || null;
-  const pickId = (skinsState && skinsState.currentPickSkinId) || null;
-  const title = `<div class="set-card-title"><span class="ci">${ico("skin")}</span>Pick This Game</div>`;
-  if (!champId) {
-    return `${title}<div class="dim" style="font-size:12px;padding:6px 2px">Lock a champion in champ select and their skins show up here — pick one and it injects for this game only. Prefer set-and-forget? Use Favorite Skins below.</div>`;
-  }
-  const champ = (skinsCatalog || []).find((c) => c.champ_id === champId);
-  if (!champ) return `${title}<div class="dim" style="padding:6px 2px">No downloaded skins for this champion yet — grab some in Setup above.</div>`;
-  const skinRows = champ.skins.map((s) => {
-    const on = pickId === s.skin_id;
-    const cls = `fav-skin${on ? " on" : ""}${s.downloaded ? "" : " undl"}`;
-    const note = s.downloaded ? "" : `<span class="dim" style="font-size:10.5px;margin-left:auto">not downloaded</span>`;
-    return `<div class="${cls}" data-pick-skin="${s.skin_id}" data-dl="${s.downloaded ? 1 : 0}">
-      <img class="fav-thumb" loading="lazy" src="${skinTileUrl(s.skin_id)}" alt="" data-imgerr="broken">
-      <span class="fav-dot">${on ? "●" : "○"}</span><span class="fav-sname">${esc(s.name)}</span>${note}</div>`;
-  }).join("");
-  const clearBtn = pickId != null ? `<button class="btn sm ghost" id="pickClear" style="margin-top:8px">Clear pick (use favorite / base)</button>` : "";
-  return `${title}
-    <div class="dim" style="font-size:12px;margin:-4px 0 10px">Picking for <b>${esc(champ.champ_name)}</b> — this game only. It injects when the game loads.</div>
-    <div class="fav-skinlist">${skinRows}</div>${clearBtn}`;
-}
-function skinPickCard() { return `<div class="glass set-card" id="skinPickCard">${skinPickCardInner()}</div>`; }
-function rerenderPickCard() {
-  const c = document.getElementById("skinPickCard");
-  if (!c) return;
-  c.innerHTML = skinPickCardInner();
-  wirePickCard();
-}
-function wirePickCard() {
-  document.querySelectorAll("#skinPickCard [data-pick-skin]").forEach((el) => el.onclick = async () => {
-    if (el.dataset.dl !== "1") { toast("Not downloaded", "That skin isn't downloaded, so it can't be injected. Download skins in Setup.", "warning"); return; }
-    const skin = parseInt(el.dataset.pickSkin, 10);
-    const already = (skinsState && skinsState.currentPickSkinId) === skin;
-    try {
-      if (already) { await invoke("skins_clear_pick"); if (skinsState) skinsState.currentPickSkinId = null; }
-      else { await invoke("skins_pick_skin", { skinId: skin }); if (skinsState) skinsState.currentPickSkinId = skin; }
-    } catch (e) { toast("Couldn't set pick", String(e), "warning"); return; }
-    rerenderPickCard();
-    toast(already ? "Pick cleared" : "Skin picked", already ? "Back to your favorite / base for this game." : "It'll inject when the game loads.", "success");
-  });
-  const clr = document.getElementById("pickClear");
-  if (clr) clr.onclick = async () => {
-    try { await invoke("skins_clear_pick"); } catch (e) {}
-    if (skinsState) skinsState.currentPickSkinId = null;
-    rerenderPickCard();
-    toast("Pick cleared", "Back to your favorite / base for this game.", "neutral");
-  };
-}
-
 
 async function renderSkins() {
   const p = document.getElementById("page");
@@ -838,14 +787,12 @@ async function renderSkins() {
       </div>
       <div class="tog ${skinsState.enabled ? "on" : ""} ${skinsAck ? "" : "disabled"}" ${skinsAck ? `data-skins-enable="1"` : ""}><div class="knob"></div></div>
     </div>
-    ${skinPickCard()}
     <div class="diag-grid">${skinsStatusCard()}${skinsSetupCard()}</div>
     ${skinsSettingsCard()}
     ${skinsFavoritesCard()}
     ${skinsPartyCard()}
   </div>`;
   wireSkins();
-  wirePickCard();
   wireFavorites();
   startSkinsPoll();
 }
@@ -910,6 +857,8 @@ function wirePartyControls() {
 
   const autoAnn = document.getElementById("skinsPartyAutoAnnouncers");
   if (autoAnn) autoAnn.onclick = onSkinsPartyToggleAutoAnnouncers;
+  const autoCustom = document.getElementById("skinsPartyAutoCustomMods");
+  if (autoCustom) autoCustom.onclick = onSkinsPartyToggleAutoCustomMods;
 
   const revoke = document.getElementById("skinsPartyRevokeConsent");
   if (revoke) revoke.onclick = async (e) => { e.preventDefault(); await onSkinsPartyRevokeConsent(); };
@@ -1027,6 +976,20 @@ async function onSkinsPartyToggleAutoAnnouncers() {
   if (currentPage === "skins") refreshPartyCard();
 }
 
+async function onSkinsPartyToggleAutoCustomMods() {
+  const enabling = !(skinsState.party && skinsState.party.auto_download_peer_custom_mods);
+  try {
+    if (TAURI) {
+      skinsState.party = await TAURI.invoke("skins_party_set_auto_custom_mods", { enabled: enabling });
+    } else if (skinsState.party) {
+      skinsState.party.auto_download_peer_custom_mods = enabling;
+    }
+  } catch (e) {
+    toast("Couldn't save setting", String(e || ""), "danger");
+  }
+  if (currentPage === "skins") refreshPartyCard();
+}
+
 // Revoking consent also force-disables party mode and disconnects
 // immediately (enforced backend-side by skins_party_set_consent) — the
 // toast here just confirms it happened.
@@ -1075,7 +1038,7 @@ function startSkinsPoll() {
         const champChanged = fresh.currentChampId !== lastChamp;
         skinsState.currentChampId = fresh.currentChampId;
         skinsState.currentPickSkinId = fresh.currentPickSkinId;
-        if (champChanged) { lastChamp = fresh.currentChampId; rerenderPickCard(); }
+        if (champChanged) { lastChamp = fresh.currentChampId; }
       }
     } catch (e) {}
     // Party mode is opt-in — only refresh its card when enabled.

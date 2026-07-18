@@ -177,6 +177,26 @@ pub async fn get_bytes_checked(
     Ok(buf)
 }
 
+/// Checked HEAD: `Ok(true)` if the resource exists (2xx), `Ok(false)` on 404.
+/// Any other status is an error. Used to skip re-uploading a blob the store
+/// already has.
+pub async fn head_exists(client: &reqwest::Client, url: &str, allowed: &HashSet<String>) -> Result<bool, String> {
+    let checked_url = check_external_url(url, allowed)?;
+    let resp = client.head(checked_url).send().await.map_err(|e| e.to_string())?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+    resp.error_for_status().map(|_| true).map_err(|e| e.to_string())
+}
+
+/// Checked PUT of raw bytes; requires a 2xx response. Same https-only host
+/// allowlist as the GET path (validated on the request URL).
+pub async fn put_bytes_checked(client: &reqwest::Client, url: &str, allowed: &HashSet<String>, body: Vec<u8>) -> Result<(), String> {
+    let checked_url = check_external_url(url, allowed)?;
+    let resp = client.put(checked_url).body(body).send().await.map_err(|e| e.to_string())?;
+    resp.error_for_status().map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

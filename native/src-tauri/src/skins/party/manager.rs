@@ -144,6 +144,11 @@ struct Inner {
     /// finished) downloading this session — dedups the download trigger
     /// across member-update callbacks.
     announcer_downloads: HashSet<String>,
+    /// Content hashes of peer custom mods we've started downloading this
+    /// session, and of our own customs we've uploaded — each dedups its
+    /// trigger across member-update / broadcast callbacks.
+    custom_mod_downloads: HashSet<String>,
+    custom_mod_uploads: HashSet<String>,
     /// The lobby `partyId` whose auto-derived room we're currently connected
     /// to, or `None` when connected to our personal room (solo / manual). The
     /// auto-room loop compares this against the live lobby to decide when to
@@ -193,6 +198,8 @@ impl PartyManager {
                 peers: HashMap::new(),
                 last_broadcast: None,
                 announcer_downloads: HashSet::new(),
+                custom_mod_downloads: HashSet::new(),
+                custom_mod_uploads: HashSet::new(),
                 current_party_id: None,
             }),
         })
@@ -442,10 +449,10 @@ impl PartyManager {
             })
             .collect();
 
-        let (consent_version, auto_download_peer_announcers) = {
+        let (consent_version, auto_download_peer_announcers, auto_download_peer_custom_mods) = {
             let app_state = self.app.state::<Arc<crate::AppState>>();
             let c = app_state.config.lock_safe();
-            (c.party.consent_version, c.party.auto_download_peer_announcers)
+            (c.party.consent_version, c.party.auto_download_peer_announcers, c.party.auto_download_peer_custom_mods)
         };
 
         json!({
@@ -457,6 +464,7 @@ impl PartyManager {
             "consent_ok": consent_version >= CURRENT_PARTY_CONSENT_VERSION,
             "consent_required_version": CURRENT_PARTY_CONSENT_VERSION,
             "auto_download_peer_announcers": auto_download_peer_announcers,
+            "auto_download_peer_custom_mods": auto_download_peer_custom_mods,
         })
     }
 
@@ -547,6 +555,16 @@ impl PartyManager {
                 skin.get("announcer_name").and_then(Value::as_str),
             ) {
                 self.maybe_download_peer_announcer(mod_id.to_string(), name.to_string());
+            }
+            // Custom-skin sync: a peer's own `.fantome` isn't in the catalog, so
+            // we fetch it by content hash from the party store (the hash is
+            // inside this signature-verified selection). ModScan-gated on the
+            // way in — same P0-F guarantee as announcers.
+            if let Some(hash) = skin.get("custom_mod_hash").and_then(Value::as_str) {
+                if !hash.is_empty() {
+                    let champ = skin.get("champion_id").and_then(Value::as_i64).unwrap_or(0);
+                    self.maybe_download_peer_custom_mod(champ, hash.to_string(), member.name.clone());
+                }
             }
         }
 
@@ -690,6 +708,88 @@ impl PartyManager {
         });
     }
 
+    /// Download a peer's picked custom `.fantome` by content hash from the
+    /// party store, ModScan it, and drop it where `find_local_mod_by_hash`
+    /// will stage it for injection. Gated on the user's own opt-in
+    /// (`auto_download_peer_custom_mods`, on by default). Deduped per hash per
+    /// session; no-op if we already hold a local mod with this hash. The hash
+    /// arrives inside a signature-verified selection, and the fetched bytes are
+    /// re-hashed to confirm they match before we trust — or scan — them.
+    fn maybe_download_peer_custom_mod(self: &Arc<Self>, champion_id: i64, hash: String, peer_name: String) {
+        if hash.len() != 16 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return;
+        }
+        let app_state = self.app.state::<Arc<crate::AppState>>().inner().clone();
+        if !app_state.config.lock_safe().party.auto_download_peer_custom_mods {
+            return;
+        }
+        // Already have a local mod with this content — nothing to fetch.
+        if Self::find_local_mod_by_hash(&hash).is_some() {
+            return;
+        }
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if !inner.enabled {
+                return;
+            }
+            if !inner.custom_mod_downloads.insert(hash.clone()) {
+                return; // already attempted this session
+            }
+        }
+        let (endpoint, allowed) = {
+            let c = app_state.config.lock_safe();
+            (c.library.endpoint.clone(), crate::net::allowed_origins(&c))
+        };
+        let mgr = Arc::clone(self);
+        let peer_log: String = peer_name.chars().take(64).collect();
+        tauri::async_runtime::spawn(async move {
+            let url = format!("{}/party-mod/{hash}", endpoint.trim_end_matches('/'));
+            let http = crate::net::build_external_client(180.0, allowed.clone());
+            const MAX: u64 = 30 * 1024 * 1024;
+            let bytes = match crate::net::get_bytes_checked(&http, &url, &allowed, MAX).await {
+                Ok(b) => b,
+                Err(e) => {
+                    log_warn!("[PARTY] Peer '{peer_log}' custom mod {hash} not fetchable: {e}");
+                    mgr.inner.lock().unwrap_or_else(|er| er.into_inner()).custom_mod_downloads.remove(&hash);
+                    return;
+                }
+            };
+            // Integrity: the bytes MUST hash to the id we requested — a content
+            // store can't substitute a different file for a given key.
+            if hash_bytes_16(&bytes) != hash {
+                log_warn!("[PARTY] Custom mod {hash} content-hash mismatch — discarding");
+                return; // the stored blob is wrong; a retry won't fix it
+            }
+            // ModScan gate — a peer can never push a flagged file onto you (P0-F).
+            let scan_input = bytes.clone();
+            let verdict = match tokio::task::spawn_blocking(move || modscan_core::scan_bytes(&scan_input)).await {
+                Ok(report) => report.verdict,
+                Err(_) => {
+                    log_warn!("[PARTY] ModScan task failed for custom mod {hash}");
+                    return;
+                }
+            };
+            if verdict != modscan_core::Verdict::Clean {
+                log_warn!("[MODSCAN] peer custom mod {hash} blocked ({verdict:?}) — not installed");
+                return; // a block isn't retryable; leave it deduped
+            }
+            // Land it as a direct child of a champ subdir so the one-level-deep
+            // `find_local_mod_by_hash` scan stages it on the next collect pass.
+            let sub = if champion_id > 0 { champion_id.to_string() } else { "party".to_string() };
+            let dir = paths::mods_dir().join("skins").join(sub);
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                log_warn!("[PARTY] Could not create dir for custom mod {hash}: {e}");
+                return;
+            }
+            let dest = dir.join(format!("peer_{hash}.fantome"));
+            if let Err(e) = std::fs::write(&dest, &bytes) {
+                log_warn!("[PARTY] Could not save peer custom mod {hash}: {e}");
+                return;
+            }
+            log_info!("[PARTY] Downloaded peer '{peer_log}' custom mod {hash} ({} bytes) — will inject it too", bytes.len());
+        });
+    }
+
     // ─── Background loops ──────────────────────────────────────────────
 
     fn spawn_background_loops(self: &Arc<Self>, generation: u64) {
@@ -823,7 +923,7 @@ impl PartyManager {
         }
     }
 
-    async fn maybe_broadcast_skin_update(&self) {
+    async fn maybe_broadcast_skin_update(self: &Arc<Self>) {
         let (champion_id, skin_id, chroma_id, custom_mod) = {
             let shared = self.skins.shared.lock_safe();
             let champion_id = shared.locked_champ_id.or(shared.hovered_champ_id);
@@ -854,9 +954,66 @@ impl PartyManager {
         // Only record last_broadcast once the send actually happened (finding
         // #2): committing before confirming could silently drop a pick made
         // during a connect/reconnect gap.
-        if self.broadcast_skin_update(champion_id, skin_id, chroma_id, custom_hash, announcer) {
+        if self.broadcast_skin_update(champion_id, skin_id, chroma_id, custom_hash.clone(), announcer) {
             self.inner.lock().unwrap_or_else(|e| e.into_inner()).last_broadcast = Some(key);
+            // Make our custom mod fetchable so peers can actually see it (they
+            // only hold its hash, not the file). Best-effort, once per hash.
+            if let (Some(m), Some(hash)) = (&custom_mod, &custom_hash) {
+                self.upload_custom_mod(hash.clone(), m.relative_path.clone());
+            }
         }
+    }
+
+    /// Upload our currently-picked custom `.fantome` to the content-addressed
+    /// party-mod store so peers can download it by its hash. Best-effort and
+    /// deduped per hash per session; a HEAD skips the transfer when the store
+    /// already has these bytes (content-addressed, so any prior upload — ours
+    /// or another party's — is identical).
+    fn upload_custom_mod(self: &Arc<Self>, hash: String, relative_path: String) {
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if !inner.enabled {
+                return;
+            }
+            if !inner.custom_mod_uploads.insert(hash.clone()) {
+                return; // already attempted this session
+            }
+        }
+        let app_state = self.app.state::<Arc<crate::AppState>>().inner().clone();
+        let (endpoint, allowed) = {
+            let c = app_state.config.lock_safe();
+            (c.library.endpoint.clone(), crate::net::allowed_origins(&c))
+        };
+        let mgr = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            let path = paths::mods_dir().join(&relative_path);
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    log_warn!("[PARTY] Custom mod {hash} unreadable for upload: {e}");
+                    mgr.inner.lock().unwrap_or_else(|er| er.into_inner()).custom_mod_uploads.remove(&hash);
+                    return;
+                }
+            };
+            const MAX: usize = 30 * 1024 * 1024;
+            if bytes.len() > MAX || bytes.len() < 512 {
+                log_warn!("[PARTY] Custom mod {hash} ({} bytes) outside transfer size limits — peers can't sync it", bytes.len());
+                return; // size won't change on retry — leave it deduped
+            }
+            let url = format!("{}/party-mod/{hash}", endpoint.trim_end_matches('/'));
+            let http = crate::net::build_external_client(180.0, allowed.clone());
+            if let Ok(true) = crate::net::head_exists(&http, &url, &allowed).await {
+                log_info!("[PARTY] Custom mod {hash} already in the party store");
+                return;
+            }
+            match crate::net::put_bytes_checked(&http, &url, &allowed, bytes).await {
+                Ok(()) => log_info!("[PARTY] Uploaded custom mod {hash} so party peers can sync it"),
+                Err(e) => {
+                    log_warn!("[PARTY] Custom mod {hash} upload failed: {e}");
+                    mgr.inner.lock().unwrap_or_else(|er| er.into_inner()).custom_mod_uploads.remove(&hash);
+                }
+            }
+        });
     }
 
     /// The selected announcer, resolved to its Library install record —
@@ -1345,13 +1502,19 @@ fn parse_skin_selection(skin: &Value) -> Option<PartySkinSelection> {
 }
 
 fn hash_file(path: &std::path::Path) -> Option<String> {
+    Some(hash_bytes_16(&std::fs::read(path).ok()?))
+}
+
+/// The 16-hex truncated-sha256 content id used everywhere party skins are
+/// matched. Shared by `hash_file` and the peer-download integrity check so
+/// both sides agree byte-for-byte on what a given blob's id is.
+fn hash_bytes_16(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    let bytes = std::fs::read(path).ok()?;
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
+    hasher.update(bytes);
     let digest = hasher.finalize();
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    Some(hex[..16].to_string())
+    hex[..16].to_string()
 }
 
 /// Content hash of a custom mod file, truncated to 16 hex chars (matches
@@ -1480,6 +1643,8 @@ mod tests {
             peers: HashMap::new(),
             last_broadcast: None,
             announcer_downloads: HashSet::new(),
+            custom_mod_downloads: HashSet::new(),
+            custom_mod_uploads: HashSet::new(),
             current_party_id: None,
         };
         let value = json!({
