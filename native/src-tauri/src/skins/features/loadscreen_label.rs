@@ -79,6 +79,14 @@ fn loadscreen_paths(champ_key: &str, num: i64) -> (String, String) {
     }
 }
 
+/// The base-skin loadscreen `.tex` path. An UNOWNED skin injects with the client
+/// forced to the base slot (the `.fantome` swaps the art in), so the game may
+/// request THIS path rather than the skin-numbered one — we write the card to
+/// both so it shows regardless of which the game asks for.
+fn base_tex_path(champ_key: &str) -> String {
+    format!("assets/characters/{champ_key}/skins/base/{champ_key}loadscreen.tex")
+}
+
 /// Draw `name` near the lower third of the card: a dark gradient scrim so text
 /// is legible over any splash, then the name centered with a hard shadow. The
 /// text baseline sits well above the bottom edge — the in-game loadscreen frame
@@ -219,23 +227,38 @@ pub async fn build(
         return None;
     };
 
-    // Write into <injection mods>/<MOD_NAME>/WAD/<Alias>.wad.client/<inner_tex>.
-    let dest = crate::skins::paths::injection_mods_dir()
+    // Write the card into <injection mods>/<MOD_NAME>/WAD/<Alias>.wad.client/.
+    // Owned skins load the skin-numbered loadscreen; an unowned skin is forced
+    // to the base slot (its `.fantome` swaps the art), so the game may request
+    // the base path instead — write both, de-duped (base skins only have one).
+    let wad_root = crate::skins::paths::injection_mods_dir()
         .join(MOD_NAME)
         .join("WAD")
-        .join(format!("{champ_alias}.wad.client"))
-        .join(inner_tex.replace('/', std::path::MAIN_SEPARATOR_STR));
-    if let Some(parent) = dest.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            log_warn!("[LOADSCREEN] mkdir failed for {}: {e}", parent.display());
-            return None;
-        }
+        .join(format!("{champ_alias}.wad.client"));
+    let base_tex = base_tex_path(champ_key);
+    let mut targets = vec![inner_tex.clone()];
+    if num != 0 && base_tex != inner_tex {
+        targets.push(base_tex);
     }
-    if let Err(e) = std::fs::write(&dest, &tex) {
-        log_warn!("[LOADSCREEN] write failed for {}: {e}", dest.display());
+    let mut wrote = 0;
+    for rel in &targets {
+        let dest = wad_root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log_warn!("[LOADSCREEN] mkdir failed for {}: {e}", parent.display());
+                continue;
+            }
+        }
+        if let Err(e) = std::fs::write(&dest, &tex) {
+            log_warn!("[LOADSCREEN] write failed for {}: {e}", dest.display());
+            continue;
+        }
+        wrote += 1;
+        log_info!("[LOADSCREEN] baked name card '{skin_name}' ({} bytes) -> {rel}", tex.len());
+    }
+    if wrote == 0 {
         return None;
     }
-    log_info!("[LOADSCREEN] baked name card '{skin_name}' ({} bytes) -> {}", tex.len(), dest.display());
     Some(MOD_NAME.to_string())
 }
 

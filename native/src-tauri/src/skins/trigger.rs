@@ -647,7 +647,12 @@ async fn run_custom_mod_injection(
     // art isn't an official skin, so no CommunityDragon loadscreen matches it.
     // The mods dir was already cleaned at the top of this function.
     if !has_custom_skin_folder {
-        if let Some(card) = stage_loadscreen_card(app, skins, user_skin_id, champion_id, true).await {
+        // `user_skin_id` is None on the category-mods path (the has_other_mods
+        // dummy selection passes None), but the dummy still carries the real
+        // picked skin in `custom_mod.skin_id` — prefer it so an official skin
+        // shown alongside a map/font/announcer mod still gets its name card.
+        let card_skin_id = Some(custom_mod.skin_id).filter(|&id| id != 0).or(user_skin_id);
+        if let Some(card) = stage_loadscreen_card(app, skins, card_skin_id, champion_id, true).await {
             extra_names.push(card);
             labels.push("Loadscreen name".to_string());
         }
