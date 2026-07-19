@@ -149,6 +149,11 @@ struct Inner {
     /// trigger across member-update / broadcast callbacks.
     custom_mod_downloads: HashSet<String>,
     custom_mod_uploads: HashSet<String>,
+    /// Hashes CONFIRMED present in the party store (upload succeeded, or a HEAD
+    /// found it already there). We only advertise a custom-mod hash to peers
+    /// once it's in here — broadcasting before the upload lands makes peers 404
+    /// the download and skip the skin (they don't retry in time).
+    custom_mod_uploaded: HashSet<String>,
     /// The lobby `partyId` whose auto-derived room we're currently connected
     /// to, or `None` when connected to our personal room (solo / manual). The
     /// auto-room loop compares this against the live lobby to decide when to
@@ -200,6 +205,7 @@ impl PartyManager {
                 announcer_downloads: HashSet::new(),
                 custom_mod_downloads: HashSet::new(),
                 custom_mod_uploads: HashSet::new(),
+                custom_mod_uploaded: HashSet::new(),
                 current_party_id: None,
             }),
         })
@@ -746,12 +752,29 @@ impl PartyManager {
             let url = format!("{}/party-mod/{hash}", endpoint.trim_end_matches('/'));
             let http = crate::net::build_external_client(180.0, allowed.clone());
             const MAX: u64 = 30 * 1024 * 1024;
-            let bytes = match crate::net::get_bytes_checked(&http, &url, &allowed, MAX).await {
-                Ok(b) => b,
-                Err(e) => {
-                    log_warn!("[PARTY] Peer '{peer_log}' custom mod {hash} not fetchable: {e}");
-                    mgr.inner.lock().unwrap_or_else(|er| er.into_inner()).custom_mod_downloads.remove(&hash);
-                    return;
+            // Retry a few times: a peer can request the moment they see the
+            // hash, a beat before the uploader's PUT has fully propagated.
+            let bytes = {
+                let mut got = None;
+                for attempt in 0..4u32 {
+                    match crate::net::get_bytes_checked(&http, &url, &allowed, MAX).await {
+                        Ok(b) => {
+                            got = Some(b);
+                            break;
+                        }
+                        Err(e) => {
+                            if attempt == 3 {
+                                log_warn!("[PARTY] Peer '{peer_log}' custom mod {hash} not fetchable after retries: {e}");
+                                mgr.inner.lock().unwrap_or_else(|er| er.into_inner()).custom_mod_downloads.remove(&hash);
+                                return;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                    }
+                }
+                match got {
+                    Some(b) => b,
+                    None => return,
                 }
             };
             // Integrity: the bytes MUST hash to the id we requested — a content
@@ -939,8 +962,24 @@ impl PartyManager {
         let custom_hash = custom_mod.as_ref().and_then(|m| hash_custom_mod(&m.relative_path));
         let announcer_id = announcer.as_ref().map(|(id, _)| id.clone());
 
-        // Change-key: champion_id included (finding #5) + the resolved hash.
-        let key = (champion_id, skin_id, chroma_id, custom_hash.clone(), announcer_id);
+        // Kick off the upload NOW so the file lands in the store. We only
+        // advertise the hash to peers once it's confirmed present (below) —
+        // broadcasting the hash before the upload finishes makes peers 404 the
+        // download and skip the skin (observed: peer fetched 1.5s before our
+        // PUT completed). Best-effort, deduped per hash.
+        if let (Some(m), Some(hash)) = (&custom_mod, &custom_hash) {
+            self.upload_custom_mod(hash.clone(), m.relative_path.clone());
+        }
+
+        // The hash goes out ONLY once the store confirms it. Until then we
+        // broadcast the base pick without it; the tick after the upload lands
+        // sees `broadcast_hash` flip to Some, which re-sends WITH the hash.
+        let broadcast_hash = custom_hash.as_ref().filter(|h| {
+            self.inner.lock().unwrap_or_else(|e| e.into_inner()).custom_mod_uploaded.contains(*h)
+        }).cloned();
+
+        // Change-key: champion_id included (finding #5) + the ADVERTISED hash.
+        let key = (champion_id, skin_id, chroma_id, broadcast_hash.clone(), announcer_id);
         {
             let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if !inner.enabled {
@@ -954,13 +993,8 @@ impl PartyManager {
         // Only record last_broadcast once the send actually happened (finding
         // #2): committing before confirming could silently drop a pick made
         // during a connect/reconnect gap.
-        if self.broadcast_skin_update(champion_id, skin_id, chroma_id, custom_hash.clone(), announcer) {
+        if self.broadcast_skin_update(champion_id, skin_id, chroma_id, broadcast_hash.clone(), announcer) {
             self.inner.lock().unwrap_or_else(|e| e.into_inner()).last_broadcast = Some(key);
-            // Make our custom mod fetchable so peers can actually see it (they
-            // only hold its hash, not the file). Best-effort, once per hash.
-            if let (Some(m), Some(hash)) = (&custom_mod, &custom_hash) {
-                self.upload_custom_mod(hash.clone(), m.relative_path.clone());
-            }
         }
     }
 
@@ -1004,10 +1038,14 @@ impl PartyManager {
             let http = crate::net::build_external_client(180.0, allowed.clone());
             if let Ok(true) = crate::net::head_exists(&http, &url, &allowed).await {
                 log_info!("[PARTY] Custom mod {hash} already in the party store");
+                mgr.inner.lock().unwrap_or_else(|er| er.into_inner()).custom_mod_uploaded.insert(hash.clone());
                 return;
             }
             match crate::net::put_bytes_checked(&http, &url, &allowed, bytes).await {
-                Ok(()) => log_info!("[PARTY] Uploaded custom mod {hash} so party peers can sync it"),
+                Ok(()) => {
+                    log_info!("[PARTY] Uploaded custom mod {hash} so party peers can sync it");
+                    mgr.inner.lock().unwrap_or_else(|er| er.into_inner()).custom_mod_uploaded.insert(hash.clone());
+                }
                 Err(e) => {
                     log_warn!("[PARTY] Custom mod {hash} upload failed: {e}");
                     mgr.inner.lock().unwrap_or_else(|er| er.into_inner()).custom_mod_uploads.remove(&hash);
@@ -1645,6 +1683,7 @@ mod tests {
             announcer_downloads: HashSet::new(),
             custom_mod_downloads: HashSet::new(),
             custom_mod_uploads: HashSet::new(),
+            custom_mod_uploaded: HashSet::new(),
             current_party_id: None,
         };
         let value = json!({
