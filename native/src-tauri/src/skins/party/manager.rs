@@ -792,9 +792,18 @@ impl PartyManager {
                     return;
                 }
             };
-            if verdict != modscan_core::Verdict::Clean {
-                log_warn!("[MODSCAN] peer custom mod {hash} blocked ({verdict:?}) — not installed");
+            // Block only genuinely malicious mods (executables, encrypted
+            // members). `Suspicious` is a heuristic "worth a look" tier that a
+            // legit community skin trips on benign quirks (e.g. a bundled
+            // README) — and the user opted into auto-syncing THIS trusted
+            // party's mods, matching how the local install path treats
+            // Suspicious. Blocking all non-Clean silently dropped legit skins.
+            if verdict == modscan_core::Verdict::Malicious {
+                log_warn!("[MODSCAN] peer custom mod {hash} blocked (Malicious) — not installed");
                 return; // a block isn't retryable; leave it deduped
+            }
+            if verdict != modscan_core::Verdict::Clean {
+                log_warn!("[MODSCAN] peer custom mod {hash} is {verdict:?} — syncing anyway (trusted party)");
             }
             // Land it as a direct child of a champ subdir so the one-level-deep
             // `find_local_mod_by_hash` scan stages it on the next collect pass.

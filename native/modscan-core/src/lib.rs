@@ -87,6 +87,10 @@ const COSMETIC_EXTENSIONS: &[&str] = &[
     "wad", "client", "dds", "tex", "png", "jpg", "jpeg", "tga", "skn", "skl", "scb", "sco", "anm",
     "mapgeo", "bin", "troybin", "wpk", "bnk", "wem", "ogg", "preload", "luaobj", "json", "txt",
     "subchunktoc", "dat",
+    // Benign metadata/docs community `.fantome` mods commonly ship — a README
+    // or preview page is not a threat, and flagging it Suspicious blocked legit
+    // skins from party-sync (executable extensions are handled separately).
+    "md", "html", "htm", "ini", "cfg", "yaml", "yml", "svg", "webp",
 ];
 
 /// Archive/compression extensions — a nested archive can hide payloads from
