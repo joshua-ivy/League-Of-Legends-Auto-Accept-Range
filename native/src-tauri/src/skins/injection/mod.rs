@@ -393,6 +393,7 @@ impl InjectionManager {
             }
         };
         self.set_error(overlay::code_reason(code).map(str::to_string));
+        crate::advisory::note_injection_code(code);
         let success = code == 0;
         if success {
             inner.last_skin_name = Some("<party-mods-only>".to_string());
@@ -449,6 +450,7 @@ impl InjectionManager {
             }
         };
         self.set_error(overlay::code_reason(code).map(str::to_string));
+        crate::advisory::note_injection_code(code);
         let success = code == 0;
         if success {
             inner.last_skin_name = Some(skin_name.to_string());

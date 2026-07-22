@@ -45,7 +45,8 @@ fn random_hex16() -> String {
 
 /// Load or rotate the per-day random id. Regenerates when the UTC day changes;
 /// the file only ever holds today's id (no cross-day link, no persistent secret).
-fn daily_id() -> String {
+/// Shared with `advisory`'s fleet-outcome report so both use the same throwaway id.
+pub fn daily_id() -> String {
     let today = utc_day();
     if let Ok(txt) = std::fs::read_to_string(id_path()) {
         if let Ok(d) = serde_json::from_str::<DailyId>(&txt) {

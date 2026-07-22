@@ -1094,6 +1094,7 @@ fn spawn_game_end_watcher(skins: Arc<SkinsState>, injection: Arc<InjectionManage
     tauri::async_runtime::spawn(async move {
         let mut has_been_in_progress = false;
         let mut has_seen_game = false;
+        let mut game_first_seen: Option<std::time::Instant> = None;
         let mut ticks: u32 = 0;
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
@@ -1112,10 +1113,23 @@ fn spawn_game_end_watcher(skins: Arc<SkinsState>, injection: Arc<InjectionManage
             let game_running = injection.game_process_running();
             if game_running {
                 has_seen_game = true;
+                game_first_seen.get_or_insert_with(std::time::Instant::now);
             }
             let game_exited = has_seen_game && !game_running;
 
             if phase_ended || game_exited {
+                // How long the injected game lived — feeds the fleet break
+                // detector (a game that dies seconds after the overlay hooked is
+                // the Vanguard-break crash signature; a full-length one is proof
+                // injection works). Only report once we actually watched a game
+                // run and exit, so a dodge/never-launched path stays silent.
+                if game_exited {
+                    if let Some(started) = game_first_seen {
+                        if let Some(outcome) = crate::advisory::classify_game_duration(started.elapsed().as_secs()) {
+                            crate::advisory::report_outcome(outcome);
+                        }
+                    }
+                }
                 // OS-enumeration kill, no lock; kill_all_runoverlay_processes
                 // would deadlock on the mutex this game's babysit loop holds.
                 injection.reset_stuck_injection();
