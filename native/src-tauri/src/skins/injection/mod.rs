@@ -75,6 +75,10 @@ impl InjectionManager {
         // rebuilt from scratch every injection, so clearing here is always
         // safe (a locked file from a still-running previous runoverlay just
         // fails the remove non-fatally).
+        // Reap mod-tools.exe leaked by a prior session/crash BEFORE cleaning
+        // dirs, so a still-running orphan can't hold overlay/mod files (or the
+        // user's cslol-dll.dll) locked across launches.
+        process::kill_all_modtools_processes_os();
         storage::clean_mods_dir(&mods_dir);
         storage::clean_overlay_dir(&overlay_dir);
         Self {

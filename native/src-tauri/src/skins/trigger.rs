@@ -1138,6 +1138,9 @@ fn spawn_game_end_watcher(skins: Arc<SkinsState>, injection: Arc<InjectionManage
 
             // Dodge backstop: neither signal fires if no game ever launched.
             if ticks >= 3600 {
+                // Dodge/never-launched backstop: still reap any spawned overlay so
+                // a stuck runoverlay doesn't outlive the watcher.
+                injection.reset_stuck_injection();
                 break;
             }
         }

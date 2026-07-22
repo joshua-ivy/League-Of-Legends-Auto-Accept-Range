@@ -388,6 +388,7 @@ fn release_held_keys(state: &AppState) {
 #[tauri::command]
 fn exit_app(app: AppHandle, state: tauri::State<Arc<AppState>>) {
     release_held_keys(&state);
+    skins::injection::process::kill_all_modtools_processes_os();
     app.exit(0);
 }
 
@@ -2706,6 +2707,7 @@ pub fn run() {
                     }
                     "quit" => {
                         release_held_keys(&app.state::<Arc<AppState>>());
+                        skins::injection::process::kill_all_modtools_processes_os();
                         app.exit(0);
                     }
                     _ => {}
@@ -2730,6 +2732,13 @@ pub fn run() {
             tray.build(app)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Chud");
+        .build(tauri::generate_context!())
+        .expect("error while building Chud")
+        .run(|_app, event| {
+            // Last-resort backstop: reap mod-tools.exe children on ANY exit path
+            // (tray Exit, exit_app, OS signal, future paths). Lock-free.
+            if let tauri::RunEvent::Exit = event {
+                skins::injection::process::kill_all_modtools_processes_os();
+            }
+        });
 }

@@ -113,6 +113,14 @@ pub fn kill_runoverlay_processes_os() {
     kill_matching_modtools_os(true);
 }
 
+/// OS-level kill of ALL `mod-tools.exe` processes (mkoverlay + runoverlay),
+/// lock-free — safe at app startup and shutdown without touching the injection
+/// mutex (a mid-game injection holds that for the whole match, so a
+/// mutex-taking sweep could deadlock/hang shutdown).
+pub fn kill_all_modtools_processes_os() {
+    kill_matching_modtools_os(false);
+}
+
 fn kill_matching_modtools(shared: &SharedOverlayProcess, runoverlay_only: bool) {
     kill_matching_modtools_os(runoverlay_only);
     // Also stop our tracked process if it exists.
