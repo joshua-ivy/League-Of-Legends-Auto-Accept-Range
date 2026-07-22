@@ -4,6 +4,7 @@
 //! LCU lockfile auth + an Auto-Accept loop, plus Auto-Range and the skins
 //! subsystem. The app operates openly — no anti-cheat evasion.
 
+mod advisory;
 mod auto_accept;
 mod auto_range;
 mod config;
@@ -2322,6 +2323,13 @@ async fn run_startup_update_check(app: AppHandle) {
     }
 }
 
+/// Last Riot-break advisory state — boot belt-and-suspenders for the same
+/// listener race as `updater_check` below. `None` until the first poll lands.
+#[tauri::command]
+fn advisory_status() -> Option<serde_json::Value> {
+    advisory::last_payload()
+}
+
 /// UI-driven update check (Settings "check for updates" + a boot belt-and-
 /// suspenders call in case `update-available` fired before the webview
 /// attached its listener). Returns `None` when already up to date.
@@ -2449,6 +2457,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            advisory_status,
             get_state,
             toggle_tool,
             stop_all,
@@ -2609,6 +2618,14 @@ pub fn run() {
                         run_startup_update_check(update_handle.clone()).await;
                     }
                 });
+            }
+
+            // Riot-break advisory poll: launch + every 10 min while open, so a
+            // break that starts overnight surfaces without a restart. Runs in
+            // dev builds too (unlike the updater) — it's how the popup is tested.
+            {
+                let advisory_handle = handle.clone();
+                tauri::async_runtime::spawn(async move { advisory::run(advisory_handle).await });
             }
 
             // Skins phase engine: always spawned — it just idles (poll fallback

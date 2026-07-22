@@ -1067,6 +1067,42 @@ function toast(title, message, tone = "info") {
   setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 300); }, 3600);
 }
 
+// ── Riot-break advisory ──────────────────────────────────────────────────────
+// Server-flagged "a Riot update broke skin apps" notice (backend: advisory.rs).
+// A dismiss is remembered per (id, stance, fix version) so the same notice
+// stays gone, but a new break — or the same break gaining a fix — pops again.
+let advisoryCurrent = null;
+function advisoryKey(p) { return `advisoryDismissed:${p.id}:${p.stance}:${p.fixedVanguard || ""}`; }
+function onAdvisory(p) {
+  const el = document.getElementById("advisory");
+  if (!el) return;
+  if (!p || !p.show) {
+    if (!el.hidden) toast("All clear", "Riot fixed the issue — skins work again.", "success");
+    el.hidden = true; advisoryCurrent = null;
+    return;
+  }
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(advisoryKey(p)) === "1"; } catch {}
+  if (dismissed) return;
+  document.getElementById("advisory-title").textContent = p.title || "Riot update is blocking skin apps";
+  document.getElementById("advisory-msg").textContent = p.message || "";
+  const d = document.getElementById("advisory-detail");
+  if (p.stance === "update") {
+    d.innerHTML = p.localVanguard
+      ? `Your Vanguard: <span class="adv-ver">${esc(p.localVanguard)}</span> &middot; fixed in <span class="adv-ver">${esc(p.fixedVanguard)}</span><br /><b>Update League in the Riot client, then close and reopen it.</b> No PC reboot needed.`
+      : `Riot has shipped a fix (Vanguard <span class="adv-ver">${esc(p.fixedVanguard)}</span>).<br /><b>Update League in the Riot client, then close and reopen it.</b>`;
+  } else {
+    d.innerHTML = `<b>No fix from Riot yet.</b> Every skin app is affected &mdash; skins won't apply in game until Riot ships an update. This notice clears automatically when they do.`;
+  }
+  el.hidden = false;
+  advisoryCurrent = p;
+}
+document.getElementById("advisory-dismiss")?.addEventListener("click", () => {
+  const el = document.getElementById("advisory");
+  if (el) el.hidden = true;
+  if (advisoryCurrent) { try { localStorage.setItem(advisoryKey(advisoryCurrent), "1"); } catch {} }
+});
+
 // ── Ready-check overlay ───────────────────────────────────────────────────────
 let rcShown = false;
 function syncReadyCheck() {
@@ -1246,9 +1282,11 @@ async function boot() {
     ev.listen("open-library", () => { if (window.ChudNavTo) window.ChudNavTo("library"); });
     ev.listen("update-available", (e) => showUpdatePill(e?.payload));
     ev.listen("update-progress", (e) => onUpdateProgress(e?.payload));
+    ev.listen("advisory-changed", (e) => onAdvisory(e?.payload));
   }
   // Belt-and-suspenders: the startup `update-available` event can fire before
   // this webview attaches its listener, so ask directly too.
   invoke("updater_check").then((info) => { if (info) showUpdatePill(info); });
+  invoke("advisory_status").then((p) => { if (p) onAdvisory(p); });
 }
 boot();
