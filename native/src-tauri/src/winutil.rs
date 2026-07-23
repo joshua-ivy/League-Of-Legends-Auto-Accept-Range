@@ -92,6 +92,23 @@ pub fn open_in_browser(url: &str) {
     }
 }
 
+/// Open a folder in Explorer via the same `ShellExecuteW` "open" verb as
+/// `open_in_browser` — it isn't just for URLs, a directory path works too.
+/// Used by the tray's "Open Mods Folder" item.
+#[cfg(windows)]
+pub fn open_folder(path: &str) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let mut file: Vec<u16> = std::ffi::OsStr::new(path).encode_wide().collect();
+    file.push(0);
+    unsafe {
+        ShellExecuteW(None, w!("open"), PCWSTR(file.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+    }
+}
+
 // Non-Windows fallbacks so the crate still type-checks off-Windows.
 #[cfg(not(windows))]
 pub fn is_admin() -> bool {
@@ -99,6 +116,8 @@ pub fn is_admin() -> bool {
 }
 #[cfg(not(windows))]
 pub fn open_in_browser(_url: &str) {}
+#[cfg(not(windows))]
+pub fn open_folder(_path: &str) {}
 #[cfg(not(windows))]
 pub fn lol_game_focused() -> bool {
     false

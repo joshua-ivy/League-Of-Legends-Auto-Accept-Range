@@ -1842,6 +1842,84 @@ fn migrate_champion_category_mods(cfg: &mut config::Config) -> bool {
     changed
 }
 
+/// One-time (idempotent) migration for mods installed before 3.0.9's
+/// download-time target detection: they're still stuck on the base placeholder
+/// (`skins/{champ*1000}`) with `target_skin_id: None`, so injection still forces
+/// base instead of the real skin. Re-runs the same offline chunk scan
+/// `place_library_mod` does at download time and, on a hit, re-files the mod via
+/// `library_set_target_skin` — the exact move + record-update path a manual
+/// "Pick skin" takes. Only ever touches `target_skin_id: None` mods sitting on a
+/// base placeholder, so re-running is harmless. Needs the LCU up to resolve the
+/// champion alias; the caller retries until it is (`spawn_library_target_migration`).
+async fn migrate_library_targets(app: &AppHandle) {
+    use skins::slog::log_info;
+    let mods_root = skins::paths::mods_dir();
+
+    // Snapshot candidates without holding the config lock across the async
+    // detection below: `(mod_id, champ_id, absolute .fantome path)` for every
+    // mod still on a base placeholder (`skins/{champ*1000}/…`) with no resolved
+    // target. `champ_id` comes straight out of the placeholder folder number —
+    // no name resolution needed, unlike `place_library_mod`'s first-install path.
+    let candidates: Vec<(String, i64, std::path::PathBuf)> = {
+        let state = app.state::<Arc<AppState>>();
+        let cfg = state.config.lock_safe();
+        cfg.library
+            .installed
+            .iter()
+            .filter_map(|(mod_id, rec)| {
+                if rec.target_skin_id.is_some() {
+                    return None;
+                }
+                let mut comps = std::path::Path::new(&rec.file).components();
+                if comps.next()?.as_os_str().to_str()? != "skins" {
+                    return None;
+                }
+                let num: i64 = comps.next()?.as_os_str().to_str()?.parse().ok()?;
+                if num % 1000 != 0 {
+                    return None;
+                }
+                Some((mod_id.clone(), num / 1000, mods_root.join(&rec.file)))
+            })
+            .collect()
+    };
+    if candidates.is_empty() {
+        return;
+    }
+
+    let mut moved = 0u32;
+    for (mod_id, champ_id, abs_path) in candidates {
+        if !abs_path.exists() {
+            continue;
+        }
+        let Some(skin_id) = skins::injection::target_detect::detect_target_skin_offline(&abs_path, champ_id).await else {
+            continue;
+        };
+        let state = app.state::<Arc<AppState>>();
+        if library_set_target_skin(app.clone(), mod_id, skin_id, state).await.is_ok() {
+            moved += 1;
+        }
+    }
+    if moved > 0 {
+        log_info!("[MIGRATE] moved {moved} mod(s) to detected skins");
+    }
+}
+
+/// Retries `migrate_library_targets` roughly every 20s, up to 6 tries (~2min),
+/// so the common "launch Chud, then open League" flow still gets migrated —
+/// detection needs the LCU up to resolve the champion alias. Gives up quietly
+/// after that; those mods just keep their "Pick skin" fallback until next launch.
+fn spawn_library_target_migration(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..6 {
+            if lcu::cached_auth().is_some() {
+                migrate_library_targets(&app).await;
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        }
+    });
+}
+
 /// ModScan result surfaced to the UI before a downloaded mod is written to disk
 /// (see `scan_downloaded_mod`). `vt` is the Worker's reputation lookup verbatim
 /// when it succeeded; a timeout/miss/offline leaves it `None`. VT only escalates
@@ -2693,6 +2771,10 @@ pub fn run() {
                 }
             }
 
+            // Retroactively resolve pre-3.0.9 champion-skin mods still stuck on
+            // the base placeholder (needs the LCU up, hence the retry loop).
+            spawn_library_target_migration(handle.clone());
+
             // Rune/build auto-import watcher (inert until enabled + a Worker
             // endpoint is configured).
             spawn_runes_auto_import(st.clone());
@@ -2839,8 +2921,9 @@ pub fn run() {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
             let show = MenuItem::with_id(app, "show", "Show Dashboard", true, None::<&str>)?;
+            let openmods = MenuItem::with_id(app, "openmods", "Open Mods Folder", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Exit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &openmods, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .tooltip("Chud")
                 .menu(&menu)
@@ -2850,6 +2933,11 @@ pub fn run() {
                             let _ = w.show();
                             let _ = w.set_focus();
                         }
+                    }
+                    "openmods" => {
+                        let dir = skins::paths::mods_dir();
+                        let _ = std::fs::create_dir_all(&dir);
+                        winutil::open_folder(&dir.to_string_lossy());
                     }
                     "quit" => {
                         release_held_keys(&app.state::<Arc<AppState>>());
