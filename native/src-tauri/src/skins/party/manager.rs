@@ -46,7 +46,7 @@ use sha2::{Digest, Sha256};
 
 use crate::lcu::{self, Auth};
 use crate::skins::injection::zips;
-use crate::skins::lcu_ext;
+use crate::skins::lcu_ext::{self, Cell};
 use crate::skins::paths;
 use crate::skins::slog::{log_info, log_warn};
 use crate::skins::SkinsState;
