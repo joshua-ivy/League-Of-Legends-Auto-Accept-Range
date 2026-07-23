@@ -482,7 +482,7 @@ const DEFAULT_SKINS_STATE = {
   enabled: false, ackOk: false, ackVersion: 0, ackRequiredVersion: 1, policy: null,
   skinsDownloaded: false, hashesReady: false,
   leaguePath: "", injectionThresholdMs: 300, autoResumeSecs: 25, autoDownload: true,
-  party: { enabled: false, my_token: null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [], consent_ok: false, consent_required_version: 1, auto_download_peer_announcers: false, auto_download_peer_custom_mods: false },
+  party: { enabled: false, armed: false, my_token: null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [], consent_ok: false, consent_required_version: 1, auto_download_peer_announcers: false, auto_download_peer_custom_mods: false },
   diagnostics: { toolsAvailable: false, dllValid: false, skinsDownloaded: false, hashesReady: false, dataDir: "" },
 };
 let skinsState = null;
@@ -618,10 +618,14 @@ function skinsPartyCardInner() {
   const peerRows = peers.length
     ? peers.map((pr) => `<div class="diag-row"><span class="diag-k">${esc(pr.summoner_name || "Unknown")}${pr.in_lobby ? " · in lobby" : ""}</span><span class="diag-v">${pr.skin_selection ? `Champion ${esc(pr.skin_selection.champion_id)} · Skin ${esc(pr.skin_selection.skin_id)}` : "No selection yet"}</span></div>`).join("")
     : `<div class="dim" style="padding:10px 2px;font-size:12.5px">No peers connected yet. Share your token or paste a friend's below.</div>`;
+  // Armed-but-not-enabled = toggled on before League finished loading;
+  // `arm_retry_loop` (Rust) keeps retrying until the LCU comes up, so the
+  // toggle shows "on" the whole time instead of bouncing back off.
+  const waitingOnLeague = p.armed && !p.enabled;
   return `
     <div class="set-card-title"><span class="ci">${ico("profile")}</span>Party Mode</div>
     <div class="set-list">
-      ${setField("Enable party mode", "Share your skin picks with your lobby in real time", `<div class="tog ${p.enabled ? "on" : ""}" id="skinsPartyToggle"><div class="knob"></div></div>`)}
+      ${setField("Enable party mode", waitingOnLeague ? "Waiting for League to finish loading…" : "Share your skin picks with your lobby in real time", `<div class="tog ${(p.enabled || p.armed) ? "on" : ""}" id="skinsPartyToggle"><div class="knob"></div></div>`)}
       ${setField("Auto-download peer announcer packs", "Fetch a teammate's announcer pack automatically — still verified against the Library catalog first", `<div class="tog ${p.auto_download_peer_announcers ? "on" : ""}" id="skinsPartyAutoAnnouncers"><div class="knob"></div></div>`)}
       ${setField("Auto-download peer custom skins", "Fetch a teammate's custom skin automatically — every file is malware-scanned before it's used", `<div class="tog ${p.auto_download_peer_custom_mods ? "on" : ""}" id="skinsPartyAutoCustomMods"><div class="knob"></div></div>`)}
     </div>
@@ -937,14 +941,22 @@ async function onSkinsSaveSettings() {
 // `invoke` swallows the error text (by design, see shared.js), so these call
 // `TAURI.invoke` directly to surface the real reason in the toast.
 async function onSkinsPartyToggle() {
-  const enabling = !(skinsState.party && skinsState.party.enabled);
+  const enabling = !(skinsState.party && (skinsState.party.enabled || skinsState.party.armed));
   try {
     if (TAURI) {
       skinsState.party = enabling ? await TAURI.invoke("skins_party_enable") : await TAURI.invoke("skins_party_disable");
     } else {
-      skinsState.party = { ...skinsState.party, enabled: enabling, my_token: enabling ? "CHUD:preview-token" : null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [] };
+      skinsState.party = { ...skinsState.party, enabled: enabling, armed: false, my_token: enabling ? "CHUD:preview-token" : null, my_summoner_id: null, my_summoner_name: "Unknown", peers: [] };
     }
-    toast(enabling ? "Party mode enabled" : "Party mode disabled", "", enabling ? "success" : "info");
+    // enable() returns Ok even when it merely armed a background retry (the
+    // LCU wasn't reachable yet) — never an error, so the toggle never bounces
+    // back off. Reflect that distinction in the toast instead of claiming a
+    // connection that hasn't happened yet.
+    if (enabling && skinsState.party && skinsState.party.armed && !skinsState.party.enabled) {
+      toast("Party mode arming", "Waiting for League to finish loading, then it'll connect automatically.", "info");
+    } else {
+      toast(enabling ? "Party mode enabled" : "Party mode disabled", "", enabling ? "success" : "info");
+    }
   } catch (e) {
     toast("Party mode error", String(e || "Failed to toggle party mode."), "danger");
   }
@@ -1047,8 +1059,9 @@ function startSkinsPoll() {
         if (champChanged) { lastChamp = fresh.currentChampId; }
       }
     } catch (e) {}
-    // Party mode is opt-in — only refresh its card when enabled.
-    if (skinsState && skinsState.party && skinsState.party.enabled) {
+    // Party mode is opt-in — only refresh its card when enabled, or armed and
+    // waiting for League (so the card flips to "connected" once arm_retry_loop succeeds).
+    if (skinsState && skinsState.party && (skinsState.party.enabled || skinsState.party.armed)) {
       const fp = await invoke("skins_party_get_state");
       if (fp) { skinsState.party = fp; refreshPartyCard(); }
     }

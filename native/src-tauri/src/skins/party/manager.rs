@@ -61,6 +61,11 @@ const LOBBY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// `party_manager.py::SKIN_BROADCAST_INTERVAL`.
 const SKIN_BROADCAST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// `arm_retry_loop`'s initial wait between `enable_inner` attempts.
+const ARM_RETRY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(3);
+/// Cap so a client that never finishes loading doesn't get hammered forever.
+const ARM_RETRY_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Current version of `docs/PRIVACY-PARTY.md`'s data-sharing disclosure.
 /// Bump this when the disclosure changes materially — `enable()` re-checks
 /// `config.party.consent_version` against it on every call, so every user's
@@ -113,6 +118,12 @@ pub struct PartySkinData {
 
 struct Inner {
     enabled: bool,
+    /// Set when `enable()` couldn't reach the LCU and instead armed a
+    /// background retry (`arm_retry_loop`) instead of failing outright — lets
+    /// party mode stay "on" from the user's perspective across a League
+    /// client that's still loading. Distinct from `enabled`: armed-but-not-
+    /// enabled means "waiting to connect", not "connected".
+    armed: bool,
     /// Still resolved from the LCU on every `enable()`, used internally only
     /// (display name). NEVER sent over the relay wire (P0-F).
     my_summoner_id: Option<u64>,
@@ -161,6 +172,27 @@ struct Inner {
     current_party_id: Option<String>,
 }
 
+/// `enable_inner`'s failure modes — split out so `enable()` can arm a
+/// background retry (`arm_retry_loop`) on the specific "LCU not up yet" case
+/// instead of hard-failing, without guessing based on the message text.
+enum EnableError {
+    /// The LCU retry loop in `enable_inner` never got a usable auth/session —
+    /// almost always "League hasn't finished loading yet", not a real error.
+    LcuUnreachable,
+    Other(String),
+}
+
+impl std::fmt::Display for EnableError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnableError::LcuUnreachable => {
+                write!(f, "Couldn't reach the League client. Make sure it's fully loaded (past the login screen), then try again.")
+            }
+            EnableError::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 /// Main orchestrator for party mode (ported from `PartyManager`). Store as
 /// `Arc<PartyManager>` in `AppState` — methods that spawn background work or
 /// register relay callbacks take `self: &Arc<Self>` so those tasks can hold
@@ -193,6 +225,7 @@ impl PartyManager {
             generation: AtomicU64::new(0),
             inner: Mutex::new(Inner {
                 enabled: false,
+                armed: false,
                 my_summoner_id: None,
                 my_summoner_name: "Unknown".to_string(),
                 my_key: None,
@@ -241,12 +274,31 @@ impl PartyManager {
             if inner.enabled {
                 return Ok(inner.my_token.clone().unwrap_or_default());
             }
+            // Already armed and waiting for League — a second enable() (double
+            // toggle, or auto-resume racing a manual toggle) must NOT spawn a
+            // second arm_retry_loop against the same generation.
+            if inner.armed {
+                return Ok("armed".to_string());
+            }
         }
         log_info!("[PARTY] Enabling party mode...");
 
         match self.enable_inner().await {
             Ok(token) => Ok(token),
-            Err(e) => {
+            // Bug fix: toggling Party on before League finishes loading used
+            // to fail here and silently disable itself, so it never
+            // connected once the client came up. Instead, stay armed and
+            // keep retrying in the background — `enable()` still returns
+            // `Ok` so the UI shows "on" (waiting), not an error toast.
+            Err(EnableError::LcuUnreachable) => {
+                log_warn!("[PARTY] {} - arming to auto-connect once League is reachable", EnableError::LcuUnreachable);
+                self.inner.lock().unwrap_or_else(|e| e.into_inner()).armed = true;
+                let my_gen = self.generation.load(Ordering::SeqCst);
+                let mgr = Arc::clone(self);
+                tauri::async_runtime::spawn(async move { mgr.arm_retry_loop(my_gen).await });
+                Ok("armed".to_string())
+            }
+            Err(EnableError::Other(e)) => {
                 log_warn!("[PARTY] Failed to enable party mode: {e}");
                 self.disable().await;
                 Err(format!("Failed to enable party mode: {e}"))
@@ -254,7 +306,7 @@ impl PartyManager {
         }
     }
 
-    async fn enable_inner(self: &Arc<Self>) -> Result<String, String> {
+    async fn enable_inner(self: &Arc<Self>) -> Result<String, EnableError> {
         // LCU can be briefly unresponsive (loading, busy, or lockfile just
         // rotated). Retry a few times, invalidating stale auth between
         // attempts, so a transient hiccup doesn't fail enable outright.
@@ -272,7 +324,7 @@ impl PartyManager {
             }
         }
         let Some((auth, (summoner_id, summoner_name))) = resolved else {
-            return Err("Couldn't reach the League client. Make sure it's fully loaded (past the login screen), then try again.".to_string());
+            return Err(EnableError::LcuUnreachable);
         };
 
         // Ephemeral identity (P0-F): neither the room key, the token, nor
@@ -333,6 +385,10 @@ impl PartyManager {
         let relay = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.enabled = false;
+            // Clear immediately (not just via the generation bump) so
+            // `get_state` reflects "off" right away instead of waiting for
+            // `arm_retry_loop`'s next sleep to wake up and notice.
+            inner.armed = false;
             inner.my_token = None;
             inner.my_key = None;
             inner.my_summoner_id = None;
@@ -430,7 +486,10 @@ impl PartyManager {
     /// `my_summoner_id`/`my_summoner_name` describe US (resolved locally,
     /// never sent to the relay). `consent_ok`/`consent_required_version`/
     /// `auto_download_peer_announcers` are P0-F fields the Skins page UI
-    /// gates its consent strip/toggle on.
+    /// gates its consent strip/toggle on. `armed` is true while
+    /// `arm_retry_loop` is waiting for League to come up (see `enable`) —
+    /// the UI shows the toggle "on" for `enabled || armed` but only renders
+    /// the token/peer UI once `enabled`.
     pub fn get_state(&self) -> Value {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let peers: Vec<Value> = inner
@@ -463,6 +522,7 @@ impl PartyManager {
 
         json!({
             "enabled": inner.enabled,
+            "armed": inner.armed,
             "my_token": inner.my_token,
             "my_summoner_id": inner.my_summoner_id,
             "my_summoner_name": inner.my_summoner_name,
@@ -833,6 +893,54 @@ impl PartyManager {
 
         let auto_mgr = Arc::clone(self);
         tauri::async_runtime::spawn(async move { auto_mgr.auto_room_loop(generation).await });
+    }
+
+    /// Arm-and-retry: spawned by `enable()` instead of hard-failing when the
+    /// LCU isn't reachable yet (League still loading). Keeps retrying
+    /// `enable_inner` with a growing backoff until it succeeds, `disable()`
+    /// clears `armed`, or another `enable()`/`disable()` bumps `generation`
+    /// out from under `my_gen` — same cancellation pattern as `auto_room_loop`.
+    async fn arm_retry_loop(self: Arc<Self>, my_gen: u64) {
+        let mut backoff = ARM_RETRY_INITIAL_BACKOFF;
+        loop {
+            tokio::time::sleep(backoff).await;
+            let armed = self.inner.lock().unwrap_or_else(|e| e.into_inner()).armed;
+            let current_gen = self.generation.load(Ordering::SeqCst);
+            match decide_arm_retry(armed, current_gen, my_gen) {
+                ArmRetryDecision::StopDisarmed | ArmRetryDecision::StopSuperseded => return,
+                ArmRetryDecision::Retry => {}
+            }
+
+            match self.enable_inner().await {
+                Ok(_) => {
+                    // `enable_inner` already set enabled=true, bumped
+                    // generation, and spawned the real background loops.
+                    let still_armed = {
+                        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                        let was_armed = inner.armed;
+                        inner.armed = false;
+                        was_armed
+                    };
+                    if !still_armed {
+                        // The user disabled Party mid-connect: `disable()`
+                        // already cleared `armed` while we were awaiting
+                        // `enable_inner`, so tear the connection it just
+                        // established back down instead of leaving it live.
+                        self.disable().await;
+                    }
+                    return;
+                }
+                Err(EnableError::LcuUnreachable) => {
+                    backoff = next_backoff(backoff);
+                    continue;
+                }
+                Err(EnableError::Other(e)) => {
+                    log_warn!("[PARTY] Arm-and-retry gave up: {e}");
+                    self.inner.lock().unwrap_or_else(|e| e.into_inner()).armed = false;
+                    return;
+                }
+            }
+        }
     }
 
     /// Auto-party: watch the LCU lobby's `partyId` and switch relay rooms as it
@@ -1393,6 +1501,35 @@ impl PartyManager {
 // Free helpers
 // ---------------------------------------------------------------------
 
+/// Outcome of one `arm_retry_loop` wake-up. Pure (no I/O) so it's
+/// unit-testable without spinning up the actual loop — see `decide_arm_retry`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArmRetryDecision {
+    Retry,
+    StopDisarmed,
+    StopSuperseded,
+}
+
+/// Whether `arm_retry_loop` should try `enable_inner` again after waking up.
+/// `armed` false means `disable()` (or a successful retry) already resolved
+/// this attempt; a `generation` mismatch means a newer `enable()`/`disable()`
+/// call has taken over — either way, stop instead of racing it.
+fn decide_arm_retry(armed: bool, current_generation: u64, my_generation: u64) -> ArmRetryDecision {
+    if !armed {
+        return ArmRetryDecision::StopDisarmed;
+    }
+    if current_generation != my_generation {
+        return ArmRetryDecision::StopSuperseded;
+    }
+    ArmRetryDecision::Retry
+}
+
+/// Grows `arm_retry_loop`'s wait toward `ARM_RETRY_MAX_BACKOFF`, doubling
+/// each attempt — pure so it's unit-testable without spinning up the loop.
+fn next_backoff(prev: std::time::Duration) -> std::time::Duration {
+    std::cmp::min(prev.saturating_mul(2), ARM_RETRY_MAX_BACKOFF)
+}
+
 /// Outcome of the P0-F roster gate. Pure (no I/O) so it's unit-testable
 /// without a live relay connection or LCU session — see `decide_peer_selection`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1680,6 +1817,7 @@ mod tests {
         // either) to check the default (never-enabled) JSON shape.
         let inner = Inner {
             enabled: false,
+            armed: false,
             my_summoner_id: None,
             my_summoner_name: "Unknown".to_string(),
             my_key: None,
@@ -1739,5 +1877,32 @@ mod tests {
     fn decide_peer_selection_rejects_when_roster_unavailable() {
         let claimed = HashSet::new();
         assert_eq!(decide_peer_selection(103, true, None, &claimed), RosterDecision::Reject("roster unavailable"));
+    }
+
+    #[test]
+    fn next_backoff_doubles_then_caps() {
+        let b1 = ARM_RETRY_INITIAL_BACKOFF;
+        assert_eq!(b1, std::time::Duration::from_secs(3));
+        let b2 = next_backoff(b1);
+        assert_eq!(b2, std::time::Duration::from_secs(6));
+        let b3 = next_backoff(b2);
+        assert_eq!(b3, ARM_RETRY_MAX_BACKOFF); // 12s would exceed the 10s cap
+        let b4 = next_backoff(b3);
+        assert_eq!(b4, ARM_RETRY_MAX_BACKOFF); // stays capped
+    }
+
+    #[test]
+    fn decide_arm_retry_stops_when_disarmed() {
+        assert_eq!(decide_arm_retry(false, 5, 5), ArmRetryDecision::StopDisarmed);
+    }
+
+    #[test]
+    fn decide_arm_retry_stops_when_superseded_by_another_enable_or_disable() {
+        assert_eq!(decide_arm_retry(true, 6, 5), ArmRetryDecision::StopSuperseded);
+    }
+
+    #[test]
+    fn decide_arm_retry_continues_when_still_armed_and_current() {
+        assert_eq!(decide_arm_retry(true, 5, 5), ArmRetryDecision::Retry);
     }
 }
