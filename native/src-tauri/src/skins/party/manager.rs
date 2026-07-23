@@ -1501,7 +1501,13 @@ impl PartyManager {
                             }
                         }
                     }
-                    log_info!("[SKIN_COLLECT] live roster (all cells cell:champ = {raw:?}, my_cell={my_cell:?}) -> champions {ids:?}");
+                    // Only log a non-empty roster — the collect loop polls
+                    // through champ select and the in-game phase (where the
+                    // champ-select session is gone), so logging every empty/
+                    // unavailable tick would flood the log.
+                    if !ids.is_empty() {
+                        log_info!("[SKIN_COLLECT] live roster (cells cell:champ = {raw:?}, my_cell={my_cell:?}) -> champions {ids:?}");
+                    }
                     return Some(ids);
                 }
             }
@@ -1510,7 +1516,6 @@ impl PartyManager {
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             }
         }
-        log_info!("[SKIN_COLLECT] live roster unavailable (champ-select session not readable after 3 tries)");
         None
     }
 }
