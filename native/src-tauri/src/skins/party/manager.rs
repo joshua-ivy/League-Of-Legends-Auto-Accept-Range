@@ -1478,10 +1478,20 @@ impl PartyManager {
                 // live so a just-propagated lock is picked up.
                 if let Some(session) = lcu_ext::champ_select_session_uncached(&self.http_client, &auth).await {
                     let my_cell = session.local_player_cell_id;
-                    let my_team = session.my_team.unwrap_or_default();
-                    let raw: Vec<(i64, i64)> = my_team.iter().map(|c| (c.cell_id.unwrap_or(0), c.champion_id.unwrap_or(0))).collect();
+                    // BOTH teams: a party member can be on the ENEMY team (custom
+                    // games, or you just want to see a friend's skin whichever
+                    // side they're on) — and you render every champion in the
+                    // game regardless of team, so restricting to my_team wrongly
+                    // rejected any peer who wasn't your ally.
+                    let cells: Vec<Cell> = session
+                        .my_team
+                        .unwrap_or_default()
+                        .into_iter()
+                        .chain(session.their_team.unwrap_or_default())
+                        .collect();
+                    let raw: Vec<(i64, i64)> = cells.iter().map(|c| (c.cell_id.unwrap_or(-1), c.champion_id.unwrap_or(0))).collect();
                     let mut ids = HashSet::new();
-                    for cell in &my_team {
+                    for cell in &cells {
                         if cell.cell_id == my_cell {
                             continue; // exclude myself
                         }
@@ -1491,7 +1501,7 @@ impl PartyManager {
                             }
                         }
                     }
-                    log_info!("[SKIN_COLLECT] live roster (my_team cells cell:champ = {raw:?}, my_cell={my_cell:?}) -> allied champions {ids:?}");
+                    log_info!("[SKIN_COLLECT] live roster (all cells cell:champ = {raw:?}, my_cell={my_cell:?}) -> champions {ids:?}");
                     return Some(ids);
                 }
             }
