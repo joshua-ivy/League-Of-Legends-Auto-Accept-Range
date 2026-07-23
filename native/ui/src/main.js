@@ -278,6 +278,145 @@ let cfg = null;
 let appearOffline = false;
 async function loadConfig() { cfg = (await invoke("get_config")) || structuredClone(DEFAULT_CONFIG); }
 const cval = (s, k) => (cfg[s] && cfg[s][k] !== undefined ? cfg[s][k] : "");
+function fmtBytes(n) {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = Math.abs(n), i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(i === 0 || v >= 10 ? 0 : 1)} ${units[i]}`;
+}
+
+// ── Data folder (relocatable app data root) ─────────────────────────────────
+const MOCK_DATA_INFO = { current: "C:\\Users\\you\\AppData\\Roaming\\Chud", default: "C:\\Users\\you\\AppData\\Roaming\\Chud", isCustom: false, sizeBytes: 1_400_000_000, freeBytesAtCurrent: 42_000_000_000 };
+let dataInfo = null;
+// Transient UI-only state for the change/reset flow — never persisted.
+// phase: "idle" | "confirmMove" | "confirmReset" | "busy" | "success"
+let dataMigration = { phase: "idle" };
+
+async function loadDataInfo() {
+  const info = await invoke("data_root_info");
+  dataInfo = info || (TAURI ? dataInfo : MOCK_DATA_INFO); // keep last-good on a transient failure
+}
+
+function dataFolderCardInner() {
+  const title = `<div class="set-card-title"><span class="ci">${ico("settings")}</span>Data folder</div>`;
+  if (!dataInfo) return `${title}<div class="dim" style="padding:10px 2px;font-size:12.5px">Loading…</div>`;
+  const m = dataMigration;
+  if (m.phase === "busy") {
+    const pct = m.total ? Math.min(100, Math.round((m.done / m.total) * 100)) : null;
+    return `${title}
+      <div class="dim" style="font-size:12.5px;margin-bottom:10px">${m.kind === "reset" ? "Moving data back to the default location…" : "Copying data to the new location…"}</div>
+      <div class="rc-bar"><div class="rc-fill" id="dataMigFill" style="width:${pct ?? 8}%"></div></div>
+      <div class="dim mono" id="dataMigHint" style="font-size:11px;margin-top:6px">${pct !== null ? pct + "%" : "Starting…"}</div>`;
+  }
+  if (m.phase === "success") {
+    return `${title}
+      <div class="dim" style="font-size:12.5px;margin-bottom:10px">${m.kind === "reset" ? "Data reset to the default location." : "Data moved."} Restart to finish.</div>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <button class="btn primary sm" id="dataMigRestart">Restart now</button>
+        ${m.deleted ? `<span class="dim" style="font-size:12px">Old data deleted ✓</span>` : `<button class="btn sm" id="dataMigDeleteOld">Delete old data (frees ~${fmtBytes(m.freeEstimateBytes)})</button>`}
+      </div>`;
+  }
+  if (m.phase === "confirmMove") {
+    return `${title}
+      <div class="dim" style="font-size:12.5px;line-height:1.55;margin-bottom:12px">Chud will copy ~${fmtBytes(m.requiredBytes)} to <span class="mono">${esc(m.targetRoot)}</span> and restart. Your current data stays put until you delete it.</div>
+      <div class="row" style="gap:10px"><button class="btn primary sm" id="dataMigConfirmMove">Move</button><button class="btn sm ghost" id="dataMigCancel">Cancel</button></div>`;
+  }
+  if (m.phase === "confirmReset") {
+    return `${title}
+      <div class="dim" style="font-size:12.5px;margin-bottom:12px">Move data back to the default location and restart?</div>
+      <div class="row" style="gap:10px"><button class="btn primary sm" id="dataMigConfirmReset">Reset</button><button class="btn sm ghost" id="dataMigCancel">Cancel</button></div>`;
+  }
+  return `${title}
+    <div class="set-list">
+      ${setField("Current location", esc(dataInfo.current), `<span class="dim" style="font-size:12.5px">${fmtBytes(dataInfo.sizeBytes)}</span>`)}
+      ${setField("Free space", "Available on this drive", `<span class="dim" style="font-size:12.5px">${fmtBytes(dataInfo.freeBytesAtCurrent)}</span>`)}
+    </div>
+    <div class="row" style="gap:10px;margin-top:6px;flex-wrap:wrap">
+      <button class="btn sm" id="dataFolderChange">Change…</button>
+      ${dataInfo.isCustom ? `<button class="btn sm ghost" id="dataFolderReset">Reset to default</button>` : ""}
+    </div>`;
+}
+function dataFolderCard() { return `<div class="glass set-card" id="dataFolderCard">${dataFolderCardInner()}</div>`; }
+function refreshDataFolderCard() {
+  const card = document.getElementById("dataFolderCard");
+  if (card) { card.innerHTML = dataFolderCardInner(); wireDataFolderCard(); }
+}
+
+// `pick_data_folder`/`validate_data_folder`/`relocate_data_root`/`reset_data_root`/
+// `delete_old_data_root` return `Result<_, String>` (or reject on failure) —
+// shared.js's `invoke` swallows the error text, so these call `TAURI.invoke`
+// directly to surface the real reason in the toast (same reasoning as the
+// skins_party_* calls above).
+async function onDataFolderChangeClick() {
+  if (!TAURI) { toast("Preview mode", "Folder picking needs the desktop app.", "info"); return; }
+  let path;
+  try { path = await TAURI.invoke("pick_data_folder"); }
+  catch (e) { toast("Couldn't open folder picker", String(e || ""), "danger"); return; }
+  if (!path) return;
+  let v;
+  try { v = await TAURI.invoke("validate_data_folder", { path }); }
+  catch (e) { toast("Couldn't check that folder", String(e || ""), "danger"); return; }
+  if (!v || !v.ok) { toast("Can't use that folder", (v && v.reason) || "Unknown reason.", "warning"); return; }
+  dataMigration = { phase: "confirmMove", path, targetRoot: v.targetRoot, requiredBytes: v.requiredBytes };
+  refreshDataFolderCard();
+}
+async function onDataFolderConfirmMove() {
+  const { path, requiredBytes } = dataMigration;
+  const oldPath = dataInfo && dataInfo.current;
+  dataMigration = { phase: "busy", kind: "move", done: 0, total: 0 };
+  refreshDataFolderCard();
+  try {
+    await TAURI.invoke("relocate_data_root", { path });
+    dataMigration = { phase: "success", kind: "move", oldPath, freeEstimateBytes: requiredBytes, deleted: false };
+  } catch (e) {
+    toast("Move failed", String(e || "Unknown error."), "danger");
+    dataMigration = { phase: "idle" }; // nothing changed — safe to just fall back
+  }
+  refreshDataFolderCard();
+}
+async function onDataFolderConfirmReset() {
+  const oldPath = dataInfo && dataInfo.current;
+  const freeEstimateBytes = dataInfo && dataInfo.sizeBytes;
+  dataMigration = { phase: "busy", kind: "reset", done: 0, total: 0 };
+  refreshDataFolderCard();
+  try {
+    await TAURI.invoke("reset_data_root");
+    dataMigration = { phase: "success", kind: "reset", oldPath, freeEstimateBytes, deleted: false };
+  } catch (e) {
+    toast("Reset failed", String(e || "Unknown error."), "danger");
+    dataMigration = { phase: "idle" };
+  }
+  refreshDataFolderCard();
+}
+async function onDataFolderDeleteOld() {
+  const oldPath = dataMigration.oldPath;
+  if (!oldPath) return;
+  try {
+    await TAURI.invoke("delete_old_data_root", { path: oldPath });
+    dataMigration.deleted = true;
+    toast("Old data deleted", "The previous data folder was removed.", "success");
+  } catch (e) {
+    toast("Couldn't delete old data", String(e || ""), "danger");
+  }
+  refreshDataFolderCard();
+}
+function wireDataFolderCard() {
+  const changeBtn = document.getElementById("dataFolderChange");
+  if (changeBtn) changeBtn.onclick = onDataFolderChangeClick;
+  const resetBtn = document.getElementById("dataFolderReset");
+  if (resetBtn) resetBtn.onclick = () => { dataMigration = { phase: "confirmReset" }; refreshDataFolderCard(); };
+  const cancelBtn = document.getElementById("dataMigCancel");
+  if (cancelBtn) cancelBtn.onclick = () => { dataMigration = { phase: "idle" }; refreshDataFolderCard(); };
+  const confirmMoveBtn = document.getElementById("dataMigConfirmMove");
+  if (confirmMoveBtn) confirmMoveBtn.onclick = onDataFolderConfirmMove;
+  const confirmResetBtn = document.getElementById("dataMigConfirmReset");
+  if (confirmResetBtn) confirmResetBtn.onclick = onDataFolderConfirmReset;
+  const restartBtn = document.getElementById("dataMigRestart");
+  if (restartBtn) restartBtn.onclick = () => { if (TAURI) TAURI.invoke("restart_app").catch(() => {}); };
+  const deleteBtn = document.getElementById("dataMigDeleteOld");
+  if (deleteBtn) deleteBtn.onclick = onDataFolderDeleteOld;
+}
 
 function setField(label, hint, control) {
   return `<div class="set-field"><div><div class="set-flabel">${esc(label)}</div>${hint ? `<div class="set-fhint">${esc(hint)}</div>` : ""}</div><div class="set-control">${control}</div></div>`;
@@ -317,6 +456,7 @@ function settingsHtml() {
   ${card("Beta features", "bolt", [
     setField("Skin Library", "Enable the in-app skin browser (work in progress). Adds a Skin Library tab to browse and install community skins.", `<div class="tog ${libraryEnabled ? "on" : ""}" id="libraryBetaTog"><div class="knob"></div></div>`),
   ].join(""))}
+  ${dataFolderCard()}
   <div class="row"><button class="btn primary" id="saveCfg">Save settings</button><span class="dim mono" id="saveHint" style="font-size:11.5px"></span></div>
   </div>`;
 }
@@ -382,6 +522,8 @@ async function renderSettings() {
       toast("Couldn't import", "Enable Rune Import, and be in champ select with a champion picked.", "warning");
     }
   };
+  wireDataFolderCard();
+  loadDataInfo().then(() => { if (currentPage === "settings") refreshDataFolderCard(); });
 }
 
 // ── Activity log ──────────────────────────────────────────────────────────────
@@ -1346,6 +1488,21 @@ async function boot() {
     ev.listen("update-available", (e) => showUpdatePill(e?.payload));
     ev.listen("update-progress", (e) => onUpdateProgress(e?.payload));
     ev.listen("advisory-changed", (e) => onAdvisory(e?.payload));
+    ev.listen("data-migration-progress", (e) => {
+      const p = e?.payload;
+      if (!p || dataMigration.phase !== "busy") return;
+      const pct = p.phase === "done" ? 100 : (p.total ? Math.min(100, Math.round((p.done / p.total) * 100)) : null);
+      dataMigration.done = p.done; dataMigration.total = p.total;
+      if (currentPage !== "settings") return;
+      const fill = document.getElementById("dataMigFill");
+      if (fill) {
+        fill.style.width = (pct ?? 8) + "%";
+        const hint = document.getElementById("dataMigHint");
+        if (hint) hint.textContent = pct !== null ? pct + "%" : "Starting…";
+      } else {
+        refreshDataFolderCard(); // card wasn't in the busy state's DOM yet (race) — full repaint
+      }
+    });
   }
   // Belt-and-suspenders: the startup `update-available` event can fire before
   // this webview attaches its listener, so ask directly too.
