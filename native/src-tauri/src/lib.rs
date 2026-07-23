@@ -2517,13 +2517,24 @@ async fn detect_mod_target(file_path: String, champion_id: i64) -> Option<i64> {
 }
 
 /// Core of `import_mod`, factored out so it's unit-testable without AppState or
-/// the real user-data dir: validate the archive, resolve the target `skins/`
-/// slot, write the file under `mods_root`, and build the `InstalledMod` record.
-/// Returns (record, sanitized stem, relative file path). `skin_id` None or a
-/// base id (`% 1000 == 0`) files under the champion's base placeholder ("Auto").
+/// the real user-data dir: validate the archive, resolve the target folder,
+/// write the file under `mods_root`, and build the `InstalledMod` record.
+/// Returns (record, sanitized stem, relative file path).
+///
+/// Folder resolution mirrors `place_library_mod`'s category -> folder rules
+/// exactly (`library_category_dir` + `CATEGORY_ALWAYS_GLOBAL`): a champion-
+/// carrying category (`champion_skin`, or a champ-tagged vfx/sfx/etc that
+/// isn't in `CATEGORY_ALWAYS_GLOBAL`) with a resolved `champion_id` files under
+/// that champ's `skins/{champ*1000}` (or the explicit `skin_id` slot); a global
+/// category (maps/fonts/announcers, or no champion) files under its flat
+/// `mods/{category_dir}` folder instead. `skin_id` None or a base id
+/// (`% 1000 == 0`) files under the champion's base placeholder ("Auto"), and
+/// only `champion_skin` ever carries an explicit `target_skin_id` — matching
+/// `place_library_mod`, which only runs target detection for that category.
 fn place_imported_mod(
     bytes: &[u8],
-    champion_id: i64,
+    category: &str,
+    champion_id: Option<i64>,
     skin_id: Option<i64>,
     name: &str,
     champ: &str,
@@ -2533,9 +2544,30 @@ fn place_imported_mod(
     if zip::ZipArchive::new(std::io::Cursor::new(bytes)).is_err() {
         return Err("That file isn't a valid mod archive.".to_string());
     }
-    let rel_dir = match skin_id.filter(|id| id % 1000 != 0) {
+    let cid = champion_id.filter(|&id| id > 0);
+    // The champion's skins/{champ*1000} folder, or the explicit skin slot when
+    // the caller picked a real (non-base) skin.
+    let champ_dir = |id: i64| match skin_id.filter(|s| s % 1000 != 0) {
         Some(sid) => std::path::PathBuf::from("skins").join(sid.to_string()),
-        None => std::path::PathBuf::from("skins").join((champion_id * 1000).to_string()),
+        None => std::path::PathBuf::from("skins").join((id * 1000).to_string()),
+    };
+    let mut target_skin_id: Option<i64> = None;
+    let rel_dir = match library_category_dir(category) {
+        Some(cat_dir) => match cid.filter(|_| !CATEGORY_ALWAYS_GLOBAL.contains(&category)) {
+            Some(id) => {
+                if category == "champion_skin" {
+                    target_skin_id = skin_id;
+                }
+                champ_dir(id)
+            }
+            None => std::path::PathBuf::from(cat_dir),
+        },
+        // champion_skin (or an unknown category) -> always champion-carrying.
+        None => {
+            let id = cid.ok_or_else(|| "Pick a champion for this mod.".to_string())?;
+            target_skin_id = skin_id;
+            champ_dir(id)
+        }
     };
     let dir = mods_root.join(&rel_dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -2551,22 +2583,26 @@ fn place_imported_mod(
         file: rel_file.clone(),
         scan_verdict: String::new(),
         scan_sha: String::new(),
-        target_skin_id: skin_id,
+        target_skin_id,
     };
     Ok((record, stem, rel_file))
 }
 
 /// Guided "Import Mod": file a user-supplied `.fantome`/`.zip` into the right
-/// `mods/skins/` slot and register it exactly like a Library install
-/// (`place_library_mod`) does, so it shows on the in-client Custom Mods button
-/// and gets picked up by injection like any other installed mod. `skin_id`
-/// `None` (or a base id, `% 1000 == 0`) is "Auto / let Chud decide" — the mod
-/// lands on the champion's base placeholder and injection's game-time
-/// detection applies it, same as an unresolved Library download.
+/// `mods/` slot for its category and register it exactly like a Library
+/// install (`place_library_mod`) does, so it shows on the in-client Custom Mods
+/// button and gets picked up by injection like any other installed mod.
+/// `champion_id`/`skin_id` only matter for `champion_skin` (and other champ-
+/// carrying categories) — the UI omits them for global categories (maps,
+/// fonts, announcers, …). `skin_id` `None` (or a base id, `% 1000 == 0`) is
+/// "Auto / let Chud decide" — the mod lands on the champion's base
+/// placeholder and injection's game-time detection applies it, same as an
+/// unresolved Library download.
 #[tauri::command]
 async fn import_mod(
     file_path: String,
-    champion_id: i64,
+    category: String,
+    champion_id: Option<i64>,
     skin_id: Option<i64>,
     name: String,
     state: tauri::State<'_, Arc<AppState>>,
@@ -2574,12 +2610,16 @@ async fn import_mod(
     use skins::slog::log_info;
     let src = std::path::PathBuf::from(&file_path);
     let bytes = tokio::fs::read(&src).await.map_err(|_| "That file isn't a valid mod archive.".to_string())?;
-    // Cosmetic only (Installed-list display) — best-effort from the local catalog.
-    let champ = skins::favorites::catalog(None).into_iter().find(|c| c.champ_id == champion_id).map(|c| c.champ_name).unwrap_or_default();
+    // Cosmetic only (Installed-list display) — best-effort from the local
+    // catalog; empty for global categories that don't carry a champion.
+    let champ = champion_id
+        .and_then(|cid| skins::favorites::catalog(None).into_iter().find(|c| c.champ_id == cid))
+        .map(|c| c.champ_name)
+        .unwrap_or_default();
     // Fall back to the source file's own stem so a blank Name still files sanely.
     let fallback = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "imported-mod".to_string());
     let (record, stem, rel_file) =
-        place_imported_mod(&bytes, champion_id, skin_id, &name, &champ, &fallback, &skins::paths::mods_dir())?;
+        place_imported_mod(&bytes, &category, champion_id, skin_id, &name, &champ, &fallback, &skins::paths::mods_dir())?;
 
     let mut c = state.config.lock_safe();
     let mut mod_id = format!("local-{}", stem.to_lowercase().replace(' ', "-"));
@@ -3111,7 +3151,7 @@ mod import_mod_tests {
         let bytes = tiny_zip();
         // Aphelios champ 523, explicit non-base target skin 523001.
         let (rec, stem, rel) =
-            place_imported_mod(&bytes, 523, Some(523001), "Ryley Aphelios", "Aphelios", "fallback", &root).unwrap();
+            place_imported_mod(&bytes, "champion_skin", Some(523), Some(523001), "Ryley Aphelios", "Aphelios", "fallback", &root).unwrap();
         assert_eq!(rel, format!("skins/523001/{stem}.fantome"));
         assert!(
             root.join("skins").join("523001").join(format!("{stem}.fantome")).exists(),
@@ -3131,7 +3171,7 @@ mod import_mod_tests {
         let bytes = tiny_zip();
         // "Auto" (skin_id None) -> base placeholder champ*1000 = 523000.
         let (rec, stem, rel) =
-            place_imported_mod(&bytes, 523, None, "Some Mod", "Aphelios", "fallback", &root).unwrap();
+            place_imported_mod(&bytes, "champion_skin", Some(523), None, "Some Mod", "Aphelios", "fallback", &root).unwrap();
         assert_eq!(rel, format!("skins/523000/{stem}.fantome"));
         assert!(root.join("skins").join("523000").join(format!("{stem}.fantome")).exists());
         assert_eq!(rec.target_skin_id, None);
@@ -3146,7 +3186,7 @@ mod import_mod_tests {
         // Explicit "Base skin" = Some(523000): %1000==0 -> base placeholder folder,
         // but target_skin_id stays the explicit value (two independent rules).
         let (rec, _stem, rel) =
-            place_imported_mod(&bytes, 523, Some(523000), "Base Mod", "Aphelios", "fb", &root).unwrap();
+            place_imported_mod(&bytes, "champion_skin", Some(523), Some(523000), "Base Mod", "Aphelios", "fb", &root).unwrap();
         assert!(rel.starts_with("skins/523000/"));
         assert_eq!(rec.target_skin_id, Some(523000));
         let _ = std::fs::remove_dir_all(&root);
@@ -3155,9 +3195,26 @@ mod import_mod_tests {
     #[test]
     fn rejects_non_zip() {
         let root = std::env::temp_dir().join("chud_import_test_bad");
-        let r = place_imported_mod(b"definitely not a zip file", 523, None, "x", "Aphelios", "fb", &root);
+        let r = place_imported_mod(b"definitely not a zip file", "champion_skin", Some(523), None, "x", "Aphelios", "fb", &root);
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("valid mod archive"));
         assert!(!root.exists(), "a rejected archive must not create any folder/file");
+    }
+
+    #[test]
+    fn non_skin_category_files_under_flat_category_folder() {
+        let root = std::env::temp_dir().join("chud_import_test_font");
+        let _ = std::fs::remove_dir_all(&root);
+        let bytes = tiny_zip();
+        // "font" is a global category (CATEGORY_ALWAYS_GLOBAL) -> flat
+        // mods/fonts/ folder, no champion, no target skin, no skins/ folder.
+        let (rec, stem, rel) =
+            place_imported_mod(&bytes, "font", None, None, "Cool Font", "", "fallback", &root).unwrap();
+        assert_eq!(rel, format!("fonts/{stem}.fantome"));
+        assert!(root.join("fonts").join(format!("{stem}.fantome")).exists());
+        assert!(!root.join("skins").exists(), "a global category must never create a skins/ folder");
+        assert_eq!(rec.target_skin_id, None);
+        assert_eq!(rec.champ, "");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

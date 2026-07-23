@@ -16,6 +16,21 @@
 
   const CI = (id) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${Number(id) || 0}.png`;
   const CAT_DISPLAY = { champion_skin: "Champion skins", map_skin: "Maps", ui: "HUD & UI", vfx: "VFX", announcer: "Announcer", voiceover: "Voiceover", sfx: "Sound FX", font: "Fonts", loading_screen: "Loading screens", miscellaneous: "Other" };
+  // Import Mod's Category dropdown — same backend category keys as CAT_DISPLAY,
+  // ordered with champion_skin first (the common case) and its own singular
+  // labels (distinct wording from the browse-filter labels above).
+  const IMPORT_CATEGORIES = [
+    ["champion_skin", "Champion Skin"],
+    ["map_skin", "Map"],
+    ["font", "Font"],
+    ["announcer", "Announcer"],
+    ["ui", "HUD / UI"],
+    ["vfx", "VFX"],
+    ["sfx", "SFX"],
+    ["voiceover", "Voiceover"],
+    ["loading_screen", "Loading Screen"],
+    ["miscellaneous", "Other"],
+  ];
   const THEME_DISPLAY = { anime: "Anime", meme: "Meme", fantasy: "Fantasy", scifi: "Sci-Fi", events: "Events" };
   const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
   const fmtN = (n) => (n >= 1000 ? Math.round(n / 100) / 10 + "k" : String(n || 0));
@@ -52,6 +67,7 @@
     // the Skin dropdown's source, so opening the modal a second time is instant.
     importOpen: false,
     importFile: null, // absolute path returned by `pick_mod_file`
+    importCategory: "champion_skin", // one of IMPORT_CATEGORIES' keys
     importChampId: null,
     importSkinId: "auto", // "auto" | "base" | a skin_id string
     importName: "",
@@ -550,6 +566,7 @@
     if (!path) return;
     st.importOpen = true;
     st.importFile = path;
+    st.importCategory = "champion_skin";
     st.importChampId = null;
     st.importSkinId = "auto";
     st.importName = baseNameFromPath(path);
@@ -561,10 +578,23 @@
   function closeImportModal() {
     st.importOpen = false;
     st.importFile = null;
+    st.importCategory = "champion_skin";
     st.importChampId = null;
     st.importSkinId = "auto";
     st.importName = "";
     st.importBusy = false;
+  }
+
+  // Category changed: champion/skin only apply to champion_skin, so switching
+  // away from it clears them — a stale champ pick from a previous category
+  // would otherwise silently ride along into a global-category import.
+  function onImportCatChange(category) {
+    st.importCategory = category || "champion_skin";
+    if (st.importCategory !== "champion_skin") {
+      st.importChampId = null;
+      st.importSkinId = "auto";
+    }
+    paint();
   }
 
   // Champion changed: reset the skin choice to Auto, then re-run detection
@@ -585,19 +615,21 @@
   }
 
   async function submitImport() {
-    if (st.importBusy || !st.importChampId) return;
-    const champId = st.importChampId;
+    const category = st.importCategory || "champion_skin";
+    const isChampSkin = category === "champion_skin";
+    if (st.importBusy || (isChampSkin && !st.importChampId)) return;
+    const champId = isChampSkin ? st.importChampId : null;
     const nameEl = document.getElementById("lbImportName");
     const name = ((nameEl && nameEl.value) || st.importName || "").trim() || "Imported mod";
     const skinSel = st.importSkinId;
-    const skinId = skinSel === "auto" ? null : skinSel === "base" ? champId * 1000 : Number(skinSel);
+    const skinId = !isChampSkin ? null : skinSel === "auto" ? null : skinSel === "base" ? champId * 1000 : Number(skinSel);
     st.importBusy = true; paint();
     try {
       if (TAURI) {
-        await TAURI.invoke("import_mod", { filePath: st.importFile, championId: champId, skinId, name });
+        await TAURI.invoke("import_mod", { filePath: st.importFile, category, championId: champId, skinId, name });
       } else {
         // Browser-preview (no Tauri backend): mock the installed record locally.
-        const champ = (st.importCatalog || []).find((c) => c.champ_id === champId);
+        const champ = isChampSkin ? (st.importCatalog || []).find((c) => c.champ_id === champId) : null;
         st.installed[`local-preview-${Date.now()}`] = { name, champ: champ ? champ.champ_name : "", version: "1.0.0", size_mb: 0, target_skin_id: skinId };
       }
       closeImportModal();
@@ -612,6 +644,9 @@
   }
 
   function importModalHtml() {
+    const category = st.importCategory || "champion_skin";
+    const isChampSkin = category === "champion_skin";
+    const catOptions = IMPORT_CATEGORIES.map(([val, label]) => `<option value="${val}" ${category === val ? "selected" : ""}>${esc(label)}</option>`).join("");
     const champs = st.importCatalog;
     const champOptions = champs === null
       ? `<option value="">Loading champions…</option>`
@@ -624,11 +659,9 @@
       `<option value="base" ${st.importSkinId === "base" ? "selected" : ""}>Base skin</option>` +
       realSkins.map((s) => `<option value="${s.skin_id}" ${st.importSkinId === String(s.skin_id) ? "selected" : ""}>${esc(s.name)}</option>`).join("");
     const fileName = (st.importFile || "").split(/[\\/]/).pop();
-    return `<div class="lb-backdrop" data-close="1"><div class="lb-modal lb-scan-modal" role="dialog">
-      <div class="lb-mtop"></div>
-      <div class="lb-mhead"><span class="lb-mtab">Import Mod</span><button class="lb-mx" data-close="1">✕</button></div>
-      <div class="lb-scan-body">
-        <div class="lb-scan-sub">${esc(fileName || "")}</div>
+    // Champion + Skin fields only make sense for champion_skin — a font/map/
+    // announcer import is just Category + Name.
+    const champSkinFields = isChampSkin ? `
         <div class="lb-import-field">
           <label class="lb-import-label" for="lbImportChamp">Champion</label>
           <select class="lb-import-select" id="lbImportChamp" data-import-champ="1" ${champs === null ? "disabled" : ""}>${champOptions}</select>
@@ -636,14 +669,23 @@
         <div class="lb-import-field">
           <label class="lb-import-label" for="lbImportSkin">Skin</label>
           <select class="lb-import-select" id="lbImportSkin" data-import-skin="1" ${champ ? "" : "disabled"}>${skinOptions}</select>
-        </div>
+        </div>` : "";
+    return `<div class="lb-backdrop" data-close="1"><div class="lb-modal lb-scan-modal" role="dialog">
+      <div class="lb-mtop"></div>
+      <div class="lb-mhead"><span class="lb-mtab">Import Mod</span><button class="lb-mx" data-close="1">✕</button></div>
+      <div class="lb-scan-body">
+        <div class="lb-scan-sub">${esc(fileName || "")}</div>
+        <div class="lb-import-field">
+          <label class="lb-import-label" for="lbImportCat">Category</label>
+          <select class="lb-import-select" id="lbImportCat" data-import-cat="1">${catOptions}</select>
+        </div>${champSkinFields}
         <div class="lb-import-field">
           <label class="lb-import-label" for="lbImportName">Name</label>
           <input class="lb-import-input" id="lbImportName" type="text" value="${esc(st.importName || "")}" maxlength="80" placeholder="Mod name">
         </div>
         <div class="lb-scan-actions">
           <button class="btn" data-close="1" ${st.importBusy ? "disabled" : ""}>Cancel</button>
-          <button class="btn primary" data-import-submit="1" ${st.importBusy || !st.importChampId ? "disabled" : ""}>${st.importBusy ? "Importing…" : "Import"}</button>
+          <button class="btn primary" data-import-submit="1" ${st.importBusy || (isChampSkin && !st.importChampId) ? "disabled" : ""}>${st.importBusy ? "Importing…" : "Import"}</button>
         </div>
       </div>
     </div></div>`;
@@ -699,6 +741,7 @@
     on("[data-setskin]", "onclick", (e) => { e.stopPropagation(); setTargetSkin(Number(e.currentTarget.dataset.setskin)); });
     on("[data-install-force]", "onclick", (e) => { e.stopPropagation(); const id = e.currentTarget.dataset.installForce; st.scanBlock = null; install(id, true); });
     on("[data-import]", "onclick", (e) => { e.stopPropagation(); openImportModal(); });
+    on("[data-import-cat]", "onchange", (e) => { onImportCatChange(e.currentTarget.value); });
     on("[data-import-champ]", "onchange", (e) => { onImportChampChange(Number(e.currentTarget.value) || null); });
     on("[data-import-skin]", "onchange", (e) => { st.importSkinId = e.currentTarget.value; });
     on("[data-import-submit]", "onclick", (e) => { e.stopPropagation(); submitImport(); });
