@@ -48,6 +48,11 @@
     catalog: null, tab: "browse", q: "", champ: "", cat: "", themes: [],
     workingOnly: true, sort: "trending", railAll: false,
     selId: null, installed: {}, favs: [], installing: {}, autoUpdate: true, conflicts: {},
+    // mod_id -> true for installed mods with a newer catalog `updatedAt` than
+    // the one recorded at install/last-check time (see `library_check_updates`
+    // / the `library-updates-available` event). `updatingMods`/`checkingUpdates`
+    // are just busy-state flags for the Update / Check now buttons.
+    updates: {}, updatingMods: {}, checkingUpdates: false,
     cats: [], themesList: [],
     bundles: null, bundleInstalling: {},
     // modId -> post-download phase ("converting"), set by the backend's
@@ -90,6 +95,14 @@
       if (!p.modId || st.installing[p.modId] == null) return;
       st.phase[p.modId] = p.phase || "converting";
       setInstallPhaseUI(p.modId);
+    });
+    // Fired by the backend's launch-time auto-update check (and the manual
+    // "Check for updates" command) — payload is the flagged mod_id list.
+    EV.listen("library-updates-available", (e) => {
+      const list = (e && e.payload) || [];
+      st.updates = {};
+      list.forEach((id) => { st.updates[id] = true; });
+      paint();
     });
   }
 
@@ -300,18 +313,25 @@
       const conflictChip = rec.target_skin_id != null && st.conflicts[String(rec.target_skin_id)]
         ? `<span class="chip lb-chip-warn" title="Another installed mod also targets this skin — only one applies per game">⚠ Shares a slot</span>`
         : "";
+      const updateChip = st.updates[id]
+        ? `<span class="chip lb-chip-update" title="A newer version is available upstream">⬆ Update available</span>`
+        : "";
+      const updating = !!st.updatingMods[id];
+      const updateBtn = st.updates[id]
+        ? `<button class="btn sm" data-update="${esc(id)}" ${updating ? "disabled" : ""}>${updating ? "Updating…" : "Update"}</button>`
+        : "";
       const actionCell = needsPick
         ? `<button class="btn sm" data-pick="${esc(id)}" data-champid="${esc(m.champId || "")}" data-champname="${esc(rec.name || id)}">Pick skin</button>`
         : `<span class="lb-inchamp" title="Open the Custom Mods button in champ select when this champion is up">In champ select ✓</span>`;
       return `<div class="lb-irow"><div class="lb-ithumb" style="${thumbStyle(m.id ? m : { id, thumb: null, champId: null, category: "Other" })}" data-open="${esc(id)}">${thumbInner(m.id ? m : { id, thumb: null, champId: null, category: "Other" })}</div>
         <div><div class="lb-name" data-open="${esc(id)}">${esc(rec.name || id)}</div><div class="lb-meta">by <b>${esc(m.author || "unknown")}</b>${rec.champ ? " · " + esc(rec.champ) : ""} · ${(rec.size_mb || 0).toFixed(1)} MB</div></div>
         <div class="lb-ver">v${esc(rec.version || "1.0.0")}</div>
-        <div class="lb-status-cell">${statusChip}${conflictChip}</div>
-        <div class="lb-iactions">${actionCell}<button class="lb-trash" data-remove="${esc(id)}" title="Remove"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg></button></div>
+        <div class="lb-status-cell">${statusChip}${conflictChip}${updateChip}</div>
+        <div class="lb-iactions">${updateBtn}${actionCell}<button class="lb-trash" data-remove="${esc(id)}" title="Remove"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg></button></div>
       </div>`;
     }).join("");
     return `<div class="lb-main">
-      <div class="lb-toolbar"><div class="lb-results">${ids.length} mod${ids.length === 1 ? "" : "s"} · ${totalMb.toFixed(0)} MB</div></div>
+      <div class="lb-toolbar"><div class="lb-results">${ids.length} mod${ids.length === 1 ? "" : "s"} · ${totalMb.toFixed(0)} MB</div><button class="btn sm" data-checkupdates="1" ${st.checkingUpdates ? "disabled" : ""}>${st.checkingUpdates ? "Checking…" : "Check for updates"}</button></div>
       <div class="glass lb-ilist">${rows}
         <div class="lb-autoup"><div><div class="lb-wl">Auto-update</div><div class="lb-wh">Check for new versions when Chud launches</div></div><div class="tog ${st.autoUpdate ? "on" : ""}" data-autoup="1"><div class="knob"></div></div></div>
       </div></div>`;
@@ -791,6 +811,8 @@
     on("[data-view]", "onclick", (e) => { e.preventDefault(); e.stopPropagation(); const u = e.currentTarget.dataset.view; if (u) inv("open_external_url", { url: u }).catch(() => {}); });
     on("[data-fav]", "onclick", async (e) => { e.stopPropagation(); const id = e.currentTarget.dataset.fav; const on2 = !st.favs.includes(id); try { const favs = await inv("library_set_favorite", { modId: id, on: on2 }); st.favs = favs || (S.hasBackend ? st.favs : (on2 ? [...st.favs, id] : st.favs.filter((x) => x !== id))); } catch (er) {} paint(); });
     on("[data-install]", "onclick", (e) => { e.stopPropagation(); install(e.currentTarget.dataset.install); });
+    on("[data-update]", "onclick", (e) => { e.stopPropagation(); updateMod(e.currentTarget.dataset.update); });
+    on("[data-checkupdates]", "onclick", (e) => { e.stopPropagation(); checkUpdatesNow(); });
     on("[data-bundle]", "onclick", (e) => { e.stopPropagation(); installBundle(e.currentTarget.dataset.bundle); });
     on("[data-remove]", "onclick", async (e) => { e.stopPropagation(); const id = e.currentTarget.dataset.remove; try { const r = await inv("library_remove", { modId: id }); if (r && r.installed) st.installed = r.installed; else if (!S.hasBackend) { const n = { ...st.installed }; delete n[id]; st.installed = n; } } catch (er) {} const m = (st.catalog || []).find((x) => x.id === id); toast("Mod removed", `${(m && m.name) || "Mod"} deleted from your mods folder.`, "danger"); paint(); });
   }
@@ -857,6 +879,54 @@
       toast("Install failed", String(e).slice(0, 120), "danger");
     }
     paint();
+  }
+
+  // Re-download an installed mod in place and swap in its refreshed record.
+  // `library_update_mod` never rewrites the file on a blocked/unchanged
+  // verdict, so `st.updates[id]` only clears on an actual "updated"/"up_to_date".
+  async function updateMod(id) {
+    if (st.updatingMods[id]) return;
+    st.updatingMods[id] = true; paint();
+    try {
+      const r = await inv("library_update_mod", { modId: id });
+      if (!r) { toast("Update failed", "Couldn't reach the update service.", "danger"); return; }
+      if (r.status === "blocked") {
+        const verdict = (r.scan && r.scan.verdict) || "suspicious";
+        toast("Update blocked by ModScan", `The new version was flagged ${esc(verdict)} — not installed.`, "danger");
+      } else if (r.status === "up_to_date") {
+        delete st.updates[id];
+        toast("Already up to date", "No newer version to install.", "success");
+      } else if (r.status === "updated") {
+        delete st.updates[id];
+        if (r.installed) st.installed[id] = r.installed;
+        const nm = (st.installed[id] && st.installed[id].name) || id;
+        toast("Mod updated", `${nm} was updated to the latest version.`, "success");
+      }
+    } catch (e) {
+      toast("Update failed", String(e).slice(0, 120), "danger");
+    } finally {
+      delete st.updatingMods[id];
+      paint();
+    }
+  }
+
+  // Manual "Check for updates" — runs regardless of the Auto-update toggle
+  // (that toggle only gates the launch-time check on the backend).
+  async function checkUpdatesNow() {
+    if (st.checkingUpdates) return;
+    st.checkingUpdates = true; paint();
+    try {
+      const flagged = await inv("library_check_updates");
+      const list = flagged || [];
+      st.updates = {};
+      list.forEach((id) => { st.updates[id] = true; });
+      toast(list.length ? `${list.length} update${list.length === 1 ? "" : "s"} available` : "Everything's up to date", "", list.length ? "warning" : "success");
+    } catch (e) {
+      toast("Check failed", String(e).slice(0, 120), "danger");
+    } finally {
+      st.checkingUpdates = false;
+      paint();
+    }
   }
 
   window.renderLibrary = async function (el) {

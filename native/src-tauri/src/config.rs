@@ -179,11 +179,17 @@ pub struct InstalledMod {
     /// "unknown" by anything that gates on it.
     #[serde(default)]
     pub category: String,
+    /// Catalog `updatedAt` captured as the update-check baseline. `None` means
+    /// "never checked yet" — the first `library_check_updates` run after
+    /// install just stamps this rather than flagging an update (see
+    /// `compute_mod_updates`).
+    #[serde(default)]
+    pub catalog_updated_at: Option<String>,
 }
 
 impl Default for InstalledMod {
     fn default() -> Self {
-        Self { name: String::new(), champ: String::new(), version: "1.0.0".into(), size_mb: 0.0, file: String::new(), scan_verdict: String::new(), scan_sha: String::new(), target_skin_id: None, category: String::new() }
+        Self { name: String::new(), champ: String::new(), version: "1.0.0".into(), size_mb: 0.0, file: String::new(), scan_verdict: String::new(), scan_sha: String::new(), target_skin_id: None, category: String::new(), catalog_updated_at: None }
     }
 }
 

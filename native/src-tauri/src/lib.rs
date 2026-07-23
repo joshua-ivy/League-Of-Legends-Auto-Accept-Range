@@ -1759,6 +1759,39 @@ fn compute_mod_conflicts(installed: &HashMap<String, config::InstalledMod>) -> H
     by_skin
 }
 
+/// Result of a catalog diff against the installed set: `flagged` mods have a
+/// newer upstream `updatedAt` than the one recorded at install/last-check
+/// time; `baselines` are mods seeing a catalog `updatedAt` for the FIRST time
+/// (nothing to compare against yet) — the caller must stamp these onto the
+/// records so they don't false-flag on the next check.
+struct UpdatePlan {
+    flagged: Vec<String>,
+    baselines: Vec<(String, String)>,
+}
+
+/// Diff installed mods against the catalog's `updatedAt` map. Pure/testable:
+/// no I/O, no config lock. `local-*` mods (imported, no upstream) and legacy
+/// records with an empty `scan_sha` (installed before ModScan existed) are
+/// skipped outright — neither flagged nor baselined.
+fn compute_mod_updates(installed: &HashMap<String, config::InstalledMod>, catalog_updated: &HashMap<String, String>) -> UpdatePlan {
+    let mut flagged = Vec::new();
+    let mut baselines = Vec::new();
+    for (mod_id, rec) in installed {
+        if mod_id.starts_with("local-") || rec.scan_sha.is_empty() {
+            continue;
+        }
+        let Some(catalog_value) = catalog_updated.get(mod_id) else {
+            continue; // deindexed upstream — nothing to compare against
+        };
+        match &rec.catalog_updated_at {
+            None => baselines.push((mod_id.clone(), catalog_value.clone())),
+            Some(v) if v != catalog_value => flagged.push(mod_id.clone()),
+            Some(_) => {}
+        }
+    }
+    UpdatePlan { flagged, baselines }
+}
+
 /// Installed mods + favorites + auto-update flag (for UI hydration).
 #[tauri::command]
 fn library_state(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
@@ -1785,6 +1818,94 @@ fn library_set_auto_update(on: bool, state: tauri::State<Arc<AppState>>) -> bool
     c.library.auto_update = on;
     let _ = c.save();
     on
+}
+
+/// Parse the catalog's `{mods:[{id, updatedAt, ...}]}` shape into an
+/// `id -> updatedAt` map. Shared by `run_update_check` (whole-catalog diff)
+/// and `library_update_mod` (one mod's current value).
+fn catalog_updated_map(catalog: &serde_json::Value) -> HashMap<String, String> {
+    catalog
+        .get("mods")
+        .and_then(|v| v.as_array())
+        .map(|mods| {
+            mods.iter()
+                .filter_map(|m| {
+                    let id = m.get("id").and_then(|v| v.as_str())?;
+                    let updated = m.get("updatedAt").and_then(|v| v.as_str())?;
+                    Some((id.to_string(), updated.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Shared body of `library_check_updates` and the launch-time auto-check:
+/// fetch the catalog's `id -> updatedAt` map, diff it against the installed
+/// set (`compute_mod_updates`), persist the first-seen baselines, and emit
+/// `library-updates-available` with the flagged mod ids. Non-fatal on any
+/// network error — returns an empty list rather than propagating.
+async fn run_update_check(app: &AppHandle) -> Vec<String> {
+    use skins::slog::{log_info, log_warn};
+    let state = app.state::<Arc<AppState>>();
+    let (endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        (c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
+    let http = net::build_external_client(20.0, allowed.clone());
+    let url = format!("{}/all", endpoint.trim_end_matches('/'));
+    let catalog = match net::get_json_checked(&http, &url, &allowed, 16 * 1024 * 1024).await {
+        Ok(v) => v,
+        Err(e) => {
+            log_warn!("[LIBRARY] update check: catalog fetch failed: {e}");
+            return Vec::new();
+        }
+    };
+    let catalog_updated = catalog_updated_map(&catalog);
+
+    let plan = {
+        let mut c = state.config.lock_safe();
+        let plan = compute_mod_updates(&c.library.installed, &catalog_updated);
+        for (mod_id, value) in &plan.baselines {
+            if let Some(rec) = c.library.installed.get_mut(mod_id) {
+                rec.catalog_updated_at = Some(value.clone());
+            }
+        }
+        if !plan.baselines.is_empty() {
+            let _ = c.save();
+        }
+        plan
+    };
+    if !plan.flagged.is_empty() {
+        log_info!("[LIBRARY] update check: {} mod(s) have a newer version available", plan.flagged.len());
+    }
+    let _ = app.emit("library-updates-available", json!(plan.flagged));
+    plan.flagged
+}
+
+/// Manual "Check for updates" — runs regardless of the `auto_update` toggle
+/// (that toggle only gates the launch-time check, see `spawn_library_update_check`).
+#[tauri::command]
+async fn library_check_updates(app: AppHandle, _state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<String>, String> {
+    Ok(run_update_check(&app).await)
+}
+
+/// Runs `run_update_check` once at launch, after a delay to let startup
+/// settle — mirrors `spawn_library_target_migration`'s shape. Gated on
+/// `library.auto_update`; the manual `library_check_updates` command ignores
+/// this toggle entirely.
+fn spawn_library_update_check(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        let auto_update = {
+            let state = app.state::<Arc<AppState>>();
+            let on = state.config.lock_safe().library.auto_update;
+            on
+        };
+        if !auto_update {
+            return;
+        }
+        run_update_check(&app).await;
+    });
 }
 
 /// Map a catalog category to its custom-mod store subdirectory (relative to
@@ -2058,6 +2179,32 @@ async fn scan_downloaded_mod(
     }
 }
 
+/// Resolve + download one Library mod's raw bytes from the Worker (our R2):
+/// `/download/{mod_id}` resolves a mirror URL, then the binary body is
+/// fetched from that. Shared by `place_library_mod` (fresh install) and
+/// `library_update_mod` (re-download to check for a patch).
+pub(crate) async fn fetch_mod_bytes(
+    http: &reqwest::Client,
+    endpoint: &str,
+    allowed: &std::collections::HashSet<String>,
+    mod_id: &str,
+) -> Result<Vec<u8>, String> {
+    use skins::slog::log_warn;
+    // Resolve URL: the Worker's small JSON response (capped generously).
+    let dl = net::get_json_checked(http, &format!("{endpoint}/download/{mod_id}"), allowed, 16 * 1024 * 1024)
+        .await
+        .map_err(|e| { log_warn!("[LIBRARY] download-resolve failed for {mod_id}: {e}"); e })?;
+    let url = dl.get("url").and_then(|v| v.as_str()).ok_or("could not resolve download")?.to_string();
+    // Binary .fantome/.zip download — 512MB is a sanity ceiling, not a target.
+    let raw_bytes = net::get_bytes_checked(http, &url, allowed, 512 * 1024 * 1024).await?;
+    // A tiny body is the Worker's 404 (not mirrored/resolvable yet) — treat as a
+    // real failure so a caller reports it, not a 9-byte .fantome written to disk.
+    if raw_bytes.len() < 1024 {
+        return Err(format!("mod '{mod_id}' isn't available yet (still mirroring) — try again shortly."));
+    }
+    Ok(raw_bytes)
+}
+
 /// Download one Library mod from the Worker (our R2), scan it IN MEMORY
 /// (ModScan), and place it in the custom-mod store: champion skins under
 /// `mods/skins/{champ*1000}`, everything else under `mods/{category}`. Shared
@@ -2108,18 +2255,16 @@ pub(crate) async fn place_library_mod(
         }
     };
 
-    // Resolve URL: the Worker's small JSON response (capped generously).
-    let dl = net::get_json_checked(http, &format!("{base}/download/{mod_id}"), allowed, 16 * 1024 * 1024)
-        .await
-        .map_err(|e| { log_warn!("[LIBRARY] download-resolve failed for {mod_id}: {e}"); e })?;
-    let url = dl.get("url").and_then(|v| v.as_str()).ok_or("could not resolve download")?.to_string();
-    // Binary .fantome/.zip download — 512MB is a sanity ceiling, not a target.
-    let raw_bytes = net::get_bytes_checked(http, &url, allowed, 512 * 1024 * 1024).await?;
-    // A tiny body is the Worker's 404 (not mirrored/resolvable yet) — treat as a
-    // real failure so a bundle reports it, not a 9-byte .fantome written to disk.
-    if raw_bytes.len() < 1024 {
-        return Err(format!("'{name}' isn't available yet (still mirroring) — try again shortly."));
-    }
+    // `fetch_mod_bytes`'s mirroring-miss error names the mod id, not the
+    // display name this call site has always shown — remap it so behavior
+    // here is unchanged.
+    let raw_bytes = fetch_mod_bytes(http, base, allowed, mod_id).await.map_err(|e| {
+        if e.contains("isn't available yet") {
+            format!("'{name}' isn't available yet (still mirroring) — try again shortly.")
+        } else {
+            e
+        }
+    })?;
 
     // Refcount the downloaded bytes: the scan and the announcer-convert both
     // need a copy, and these can be 512MB — an Arc clone is a pointer bump,
@@ -2189,9 +2334,25 @@ pub(crate) async fn place_library_mod(
             if let Some(id) = skins::injection::target_detect::detect_target_skin_offline(&file_path, cid).await {
                 let real_dir = skins::paths::mods_dir().join("skins").join(id.to_string());
                 if tokio::fs::create_dir_all(&real_dir).await.is_ok() {
-                    let real_path = real_dir.join(&file_name);
+                    // `rename` overwrites an existing destination on Windows — a
+                    // second mod that sanitizes to the same stem AND resolves to
+                    // this same skin slot would otherwise silently clobber the
+                    // first. Same collision-safe suffix loop as `library_set_target_skin`.
+                    let mut real_path = real_dir.join(&file_name);
+                    if real_path.exists() {
+                        let mut n = 2;
+                        loop {
+                            let candidate = real_dir.join(format!("{stem}-{n}.fantome"));
+                            if !candidate.exists() {
+                                real_path = candidate;
+                                break;
+                            }
+                            n += 1;
+                        }
+                    }
                     if tokio::fs::rename(&file_path, &real_path).await.is_ok() {
-                        rel_file = std::path::PathBuf::from("skins").join(id.to_string()).join(&file_name).to_string_lossy().replace('\\', "/");
+                        let final_name = real_path.file_name().expect("real_path always has a filename").to_owned();
+                        rel_file = std::path::PathBuf::from("skins").join(id.to_string()).join(&final_name).to_string_lossy().replace('\\', "/");
                         target_skin_id = Some(id);
                         log_info!("[LIBRARY] '{name}' auto-detected -> skin {id}, refiled to mods/{rel_file}");
                     }
@@ -2210,6 +2371,7 @@ pub(crate) async fn place_library_mod(
         scan_sha: summary.sha256.clone(),
         target_skin_id,
         category: category.to_string(),
+        catalog_updated_at: None,
     };
     Ok((Some(record), summary))
 }
@@ -2383,6 +2545,77 @@ async fn library_install(
         "scan": serde_json::to_value(&summary).unwrap_or_else(|_| json!({})),
         "record": record_json,
     }))
+}
+
+/// Re-download an installed Library mod and, if it changed, replace it IN
+/// PLACE at its existing file path — this preserves the mod's skin slot,
+/// mod_id, favorites, and `target_skin_id`, unlike re-running
+/// `place_library_mod` (which would treat it as a brand-new install and risk
+/// an orphaned old file or a discarded manual skin pick). `force` overrides a
+/// blocking ModScan verdict on the NEW bytes, same override semantics as
+/// `library_install`. Returns `{status: "blocked"|"up_to_date"|"updated", ...}`.
+#[tauri::command]
+async fn library_update_mod(
+    mod_id: String,
+    force: Option<bool>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    if mod_id.starts_with("local-") {
+        return Err("Imported mods have no upstream to update from.".to_string());
+    }
+    let (rel_file, name, old_sha, endpoint, allowed) = {
+        let c = state.config.lock_safe();
+        let rec = c.library.installed.get(&mod_id).ok_or("mod not installed")?;
+        (rec.file.clone(), rec.name.clone(), rec.scan_sha.clone(), c.library.endpoint.clone(), net::allowed_origins(&c))
+    };
+    let base = endpoint.trim_end_matches('/').to_string();
+    let http = net::build_external_client(180.0, allowed.clone());
+
+    // The mod's CURRENT catalog `updatedAt` — stamped as the new baseline
+    // either way (unchanged or updated) below, so the next check doesn't
+    // immediately re-flag it. Best-effort: a catalog-fetch failure just
+    // leaves the existing baseline in place.
+    let catalog_updated_at = net::get_json_checked(&http, &format!("{base}/all"), &allowed, 16 * 1024 * 1024)
+        .await
+        .ok()
+        .and_then(|v| catalog_updated_map(&v).remove(mod_id.as_str()));
+
+    let new_bytes = fetch_mod_bytes(&http, &base, &allowed, &mod_id).await?;
+    let new_bytes = Arc::new(new_bytes);
+    let summary = scan_downloaded_mod(&base, &allowed, &http, new_bytes.clone(), &name).await;
+    if summary.blocking && !force.unwrap_or(false) {
+        return Ok(json!({
+            "status": "blocked",
+            "scan": serde_json::to_value(&summary).unwrap_or_else(|_| json!({})),
+            "record": serde_json::Value::Null,
+        }));
+    }
+
+    let mut c = state.config.lock_safe();
+    if summary.sha256 == old_sha {
+        // Unchanged upstream (only metadata changed) — no file rewrite needed.
+        if let Some(rec) = c.library.installed.get_mut(&mod_id) {
+            if let Some(v) = catalog_updated_at { rec.catalog_updated_at = Some(v); }
+        }
+        let _ = c.save();
+        return Ok(json!({ "status": "up_to_date" }));
+    }
+    drop(c); // release the config lock before the filesystem write below
+
+    let path = skins::paths::mods_dir().join(&rel_file);
+    tokio::fs::write(&path, new_bytes.as_slice()).await.map_err(|e| format!("couldn't write updated '{name}': {e}"))?;
+
+    let mut c = state.config.lock_safe();
+    let Some(rec) = c.library.installed.get_mut(&mod_id) else {
+        return Err("mod not installed".to_string()); // removed mid-update
+    };
+    rec.scan_sha = summary.sha256.clone();
+    rec.scan_verdict = summary.verdict.clone();
+    rec.size_mb = (new_bytes.len() as f64) / 1_048_576.0;
+    if let Some(v) = catalog_updated_at { rec.catalog_updated_at = Some(v); }
+    let record_json = serde_json::to_value(&*rec).unwrap_or_else(|_| json!({}));
+    let _ = c.save();
+    Ok(json!({ "status": "updated", "installed": record_json }))
 }
 
 /// The curated champion bundles (from the Worker), enriched with per-skin
@@ -2638,6 +2871,7 @@ fn place_imported_mod(
         scan_sha: String::new(),
         target_skin_id,
         category: category.to_string(),
+        catalog_updated_at: None,
     };
     Ok((record, stem, rel_file))
 }
@@ -2968,6 +3202,8 @@ pub fn run() {
             library_set_favorite,
             library_set_auto_update,
             library_install,
+            library_check_updates,
+            library_update_mod,
             library_remove,
             library_set_target_skin,
             pick_mod_file,
@@ -3006,6 +3242,9 @@ pub fn run() {
             // Retroactively resolve pre-3.0.9 champion-skin mods still stuck on
             // the base placeholder (needs the LCU up, hence the retry loop).
             spawn_library_target_migration(handle.clone());
+
+            // Auto-update check (gated on library.auto_update inside the task).
+            spawn_library_update_check(handle.clone());
 
             // Rune/build auto-import watcher (inert until enabled + a Worker
             // endpoint is configured).
@@ -3358,5 +3597,95 @@ mod conflict_tests {
         assert!(ids.contains(&"mod_a".to_string()));
         assert!(ids.contains(&"mod_b".to_string()));
         assert!(!conflicts.contains_key(&523002), "a lone mod on a skin is not a conflict");
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    fn mod_with(scan_sha: &str, catalog_updated_at: Option<&str>) -> config::InstalledMod {
+        config::InstalledMod {
+            scan_sha: scan_sha.to_string(),
+            catalog_updated_at: catalog_updated_at.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn newer_catalog_value_flags_an_update() {
+        let mut installed = HashMap::new();
+        installed.insert("mod_a".to_string(), mod_with("sha_a", Some("A")));
+        let mut catalog = HashMap::new();
+        catalog.insert("mod_a".to_string(), "B".to_string());
+
+        let plan = compute_mod_updates(&installed, &catalog);
+
+        assert_eq!(plan.flagged, vec!["mod_a".to_string()]);
+        assert!(plan.baselines.is_empty());
+    }
+
+    #[test]
+    fn matching_catalog_value_is_not_flagged() {
+        let mut installed = HashMap::new();
+        installed.insert("mod_a".to_string(), mod_with("sha_a", Some("A")));
+        let mut catalog = HashMap::new();
+        catalog.insert("mod_a".to_string(), "A".to_string());
+
+        let plan = compute_mod_updates(&installed, &catalog);
+
+        assert!(plan.flagged.is_empty());
+        assert!(plan.baselines.is_empty());
+    }
+
+    #[test]
+    fn no_stored_baseline_yet_is_baselined_not_flagged() {
+        let mut installed = HashMap::new();
+        installed.insert("mod_a".to_string(), mod_with("sha_a", None));
+        let mut catalog = HashMap::new();
+        catalog.insert("mod_a".to_string(), "X".to_string());
+
+        let plan = compute_mod_updates(&installed, &catalog);
+
+        assert!(plan.flagged.is_empty(), "a first-seen catalog value must not false-flag");
+        assert_eq!(plan.baselines, vec![("mod_a".to_string(), "X".to_string())]);
+    }
+
+    #[test]
+    fn local_mods_are_always_ignored() {
+        let mut installed = HashMap::new();
+        installed.insert("local-foo".to_string(), mod_with("sha_a", Some("A")));
+        let mut catalog = HashMap::new();
+        catalog.insert("local-foo".to_string(), "B".to_string());
+
+        let plan = compute_mod_updates(&installed, &catalog);
+
+        assert!(plan.flagged.is_empty(), "imported mods have no upstream and must never be flagged");
+        assert!(plan.baselines.is_empty());
+    }
+
+    #[test]
+    fn mod_absent_from_catalog_is_neither_flagged_nor_baselined() {
+        let mut installed = HashMap::new();
+        installed.insert("mod_a".to_string(), mod_with("sha_a", None));
+        let catalog = HashMap::new(); // deindexed upstream
+
+        let plan = compute_mod_updates(&installed, &catalog);
+
+        assert!(plan.flagged.is_empty());
+        assert!(plan.baselines.is_empty());
+    }
+
+    #[test]
+    fn empty_scan_sha_legacy_record_is_ignored() {
+        let mut installed = HashMap::new();
+        installed.insert("mod_a".to_string(), mod_with("", Some("A")));
+        let mut catalog = HashMap::new();
+        catalog.insert("mod_a".to_string(), "B".to_string());
+
+        let plan = compute_mod_updates(&installed, &catalog);
+
+        assert!(plan.flagged.is_empty(), "a pre-ModScan legacy record has no baseline to trust");
+        assert!(plan.baselines.is_empty());
     }
 }

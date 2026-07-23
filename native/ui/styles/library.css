@@ -91,6 +91,7 @@
 .chip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; text-transform: uppercase; padding: 4px 9px; border-radius: 999px; border: 1px solid transparent; }
 .lb-chip-ok { color: #33e0a0; border-color: rgba(51,224,160,0.33); background: rgba(51,224,160,0.09); }
 .lb-chip-warn { color: #e6a23c; border-color: rgba(230,162,60,0.45); background: rgba(230,162,60,0.12); }
+.lb-chip-update { color: #5aa9ff; border-color: rgba(90,169,255,0.4); background: rgba(90,169,255,0.12); }
 .lb-chip-n { color: #9a9ac8; border-color: var(--glass-border); }
 .lb-dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
 .lb-dot.on { background: currentColor; }
