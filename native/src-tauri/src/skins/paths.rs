@@ -14,13 +14,93 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use crate::skins::slog::log_info;
+
 /// Cached desktop-user `AppData\Local` path (None = no mismatch detected, or
 /// detection failed — caller falls back to this process's own env vars).
 static DESKTOP_LOCALAPPDATA: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-/// Root of Chud's writable data tree.
+/// Cached resolved data root (default or user-relocated) — read once per
+/// process. A relocation via `write_pointer`/`remove_pointer` only takes
+/// effect on the next launch; see `relocate_data_root`/`reset_data_root`.
+static RESOLVED_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Root of Chud's writable data tree — the default `%LOCALAPPDATA%\Chud`,
+/// unless the user relocated it (see `pointer_file_path`).
 pub fn data_root() -> PathBuf {
+    RESOLVED_DATA_ROOT.get_or_init(resolve_data_root).clone()
+}
+
+/// The fixed, never-relocated default data root.
+pub fn default_data_root() -> PathBuf {
     local_appdata().join("Chud")
+}
+
+/// Read `pointer_file_path()` and use it as the data root if it points at an
+/// absolute path that exists as a directory (or can be created) — else fall
+/// back to the default.
+fn resolve_data_root() -> PathBuf {
+    let default = default_data_root();
+    let Some(custom) = read_pointer() else {
+        log_info!("[paths] Data root: {} (default)", default.display());
+        return default;
+    };
+
+    if pointer_target_usable(&custom) {
+        log_info!("[paths] Data root: {} (custom, via {})", custom.display(), pointer_file_path().display());
+        custom
+    } else {
+        log_info!("[paths] Data root: {} (default — pointer target {} unusable)", default.display(), custom.display());
+        default
+    }
+}
+
+/// A pointer target is usable if it's already a directory, or we can create it.
+fn pointer_target_usable(candidate: &Path) -> bool {
+    candidate.is_dir() || std::fs::create_dir_all(candidate).is_ok()
+}
+
+/// The pointer file's location — always the DEFAULT `%LOCALAPPDATA%\Chud`
+/// (elevation-resolved via `local_appdata()`, never the raw `LOCALAPPDATA` env
+/// var). This must stay fixed regardless of any relocation, or an elevated
+/// injection launch and the unelevated webview would read two different
+/// pointers and diverge onto different data trees.
+pub fn pointer_file_path() -> PathBuf {
+    local_appdata().join("Chud").join("dataroot.txt")
+}
+
+/// Read the pointer file into an absolute path. Existence/dir checks happen
+/// in `resolve_data_root` — this just locates the file on disk.
+fn read_pointer() -> Option<PathBuf> {
+    let text = std::fs::read_to_string(pointer_file_path()).ok()?;
+    parse_pointer_text(&text)
+}
+
+/// Parse pointer-file contents into an absolute path. Split out from
+/// `read_pointer` so it's unit-testable without touching the real
+/// `%LOCALAPPDATA%\Chud\dataroot.txt` (see tests below).
+fn parse_pointer_text(text: &str) -> Option<PathBuf> {
+    let candidate = PathBuf::from(text.trim());
+    candidate.is_absolute().then_some(candidate)
+}
+
+/// Point `data_root()` at `custom_root` from the next launch onward. Callers
+/// must have already copied and verified the data at `custom_root` — this
+/// function only flips the pointer.
+pub fn write_pointer(custom_root: &Path) -> std::io::Result<()> {
+    let pointer_dir = local_appdata().join("Chud");
+    std::fs::create_dir_all(&pointer_dir)?;
+    std::fs::write(pointer_file_path(), custom_root.to_string_lossy().as_bytes())
+}
+
+/// Remove the pointer file, reverting `data_root()` to the default from the
+/// next launch onward. Not-found is not an error (already at default).
+pub fn remove_pointer() -> std::io::Result<()> {
+    match std::fs::remove_file(pointer_file_path()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 pub fn skins_dir() -> PathBuf {
@@ -262,5 +342,53 @@ pub fn get_asset_path(name: &str) -> PathBuf {
         // Doesn't exist yet (e.g. not-yet-downloaded asset) — the lexical
         // component check above already ruled out traversal.
         Err(_) => asset_path,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `resolve_data_root`/`data_root` cache into a process-global `OnceLock`
+    // and `read_pointer` always targets the real `%LOCALAPPDATA%\Chud\dataroot.txt`,
+    // so exercising the full resolution here would be either a no-op (once
+    // cached) or would touch the real user profile. Test the pure pieces
+    // (`parse_pointer_text`, `pointer_target_usable`) instead — together they
+    // cover both branches `resolve_data_root` takes.
+
+    #[test]
+    fn parse_pointer_text_no_pointer_falls_back_to_default() {
+        // Empty/whitespace content is what a missing-or-blank pointer file
+        // parses to — same "no pointer" branch `resolve_data_root` takes.
+        assert_eq!(parse_pointer_text(""), None);
+        assert_eq!(parse_pointer_text("   \n"), None);
+    }
+
+    #[test]
+    fn parse_pointer_text_rejects_relative_paths() {
+        assert_eq!(parse_pointer_text("Chud"), None);
+        assert_eq!(parse_pointer_text("some\\relative\\path"), None);
+    }
+
+    #[test]
+    fn parse_pointer_text_accepts_absolute_path_trimmed() {
+        let dir = std::env::temp_dir().join("chud_paths_test_pointer");
+        let text = format!("  {}  \n", dir.display());
+        assert_eq!(parse_pointer_text(&text), Some(dir));
+    }
+
+    #[test]
+    fn pointer_target_usable_for_existing_and_creatable_dirs() {
+        let dir = std::env::temp_dir().join("chud_paths_test_pointer_target");
+        let _ = std::fs::remove_dir_all(&dir); // start clean
+        assert!(!dir.is_dir());
+        // Not yet existing, but creatable — same case `resolve_data_root`
+        // treats as usable (an absolute path picked via the folder dialog
+        // that hasn't been created yet).
+        assert!(pointer_target_usable(&dir));
+        assert!(dir.is_dir());
+        // Already existing.
+        assert!(pointer_target_usable(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

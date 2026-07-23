@@ -502,6 +502,285 @@ async fn submit_bug_report(description: String) -> Result<(), String> {
 }
 
 // ============================================================
+// Relocatable data folder (Phase 1) — moves only `skins::paths::data_root()`'s
+// tree (mods/injection/logs/skins/resources/state) to a user-chosen location
+// via a pointer file; config.json (Roaming) and stats stay put. A relocation
+// only takes effect on the next launch (`paths::data_root()` caches its
+// resolution once), so every command here just prepares the move — the UI
+// is responsible for prompting a restart.
+// ============================================================
+
+/// Guard shared by every data-migration command: refuse while an injection
+/// could still be touching the tree being copied/deleted. Three checks
+/// because each covers a different window — the build phase, the
+/// whole-game overlay lifetime (`injection_in_progress` stays true for the
+/// whole game, see `injection::process`'s doc comment), and a phase-based
+/// backstop in case a build is about to start.
+fn data_migration_guard(state: &AppState) -> Result<(), String> {
+    let building = state.skins.injection_inflight.load(Ordering::SeqCst);
+    let running = state.skins_injection.lock_safe().as_ref().is_some_and(|m| m.injection_in_progress());
+    let risky_phase = {
+        let phase = state.skins.shared.lock_safe().phase.clone();
+        matches!(phase.as_deref(), Some("ChampSelect") | Some("FINALIZATION") | Some("InProgress"))
+    };
+    if building || running || risky_phase {
+        return Err("Injection is in progress — try again after this game.".to_string());
+    }
+    Ok(())
+}
+
+/// Shared validation logic for `validate_data_folder` and both migration
+/// commands (relocate/reset re-run this server-side — the client's own
+/// pre-check is never trusted). `path` is the folder the user picked; the
+/// actual target root always nests one more `Chud` folder so a move never
+/// dumps into a folder that already has unrelated files in it.
+fn validate_data_folder_result(path: &str) -> serde_json::Value {
+    const TWO_GIB: u64 = 2 * 1024 * 1024 * 1024;
+
+    let picked = std::path::PathBuf::from(path);
+    let target_root = picked.join("Chud");
+    let target_str = target_root.to_string_lossy().into_owned();
+    let current = skins::paths::data_root();
+    let required = skins::datamove::dir_size(&current);
+
+    // `picked` may not exist yet (a folder the user typed/picked but hasn't
+    // been created) — query free space at the nearest existing ancestor.
+    let existing_ancestor =
+        picked.ancestors().find(|p| p.exists()).map(std::path::PathBuf::from).unwrap_or_else(|| picked.clone());
+    let free = winutil::free_disk_space_bytes(&existing_ancestor).unwrap_or(0);
+
+    let fail = |reason: String| {
+        json!({ "ok": false, "reason": reason, "targetRoot": target_str, "requiredBytes": required, "freeBytes": free })
+    };
+
+    if !winutil::is_fixed_local_drive(&picked) {
+        return fail("Pick a folder on a fixed local drive — network/USB drives make skin injection too slow".to_string());
+    }
+
+    let target_non_empty = target_root.is_dir()
+        && std::fs::read_dir(&target_root).map(|mut d| d.next().is_some()).unwrap_or(false);
+    if target_non_empty {
+        return fail("That folder already has data — pick an empty location".to_string());
+    }
+
+    if free < required.saturating_add(TWO_GIB) {
+        let needed_gb = required.saturating_add(TWO_GIB) as f64 / (1024.0 * 1024.0 * 1024.0);
+        return fail(format!("Not enough free space: needs ~{needed_gb:.1} GB"));
+    }
+
+    // Writability probe: create the picked folder (not yet the nested `Chud`
+    // target — that's created by `copy_tree` at actual migration time), then
+    // a temp-file write/delete round trip.
+    if std::fs::create_dir_all(&picked).is_err() {
+        return fail("Can't create that folder — check permissions".to_string());
+    }
+    let probe = picked.join(".chud_write_probe.tmp");
+    let writable = std::fs::write(&probe, b"probe").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    if !writable {
+        return fail("That folder isn't writable".to_string());
+    }
+
+    let current_lower = current.to_string_lossy().to_lowercase();
+    let picked_lower = picked.to_string_lossy().to_lowercase();
+    let risky = picked_lower.starts_with(&current_lower)
+        || picked_lower.contains("\\windows\\")
+        || picked_lower.contains("program files");
+    if risky {
+        return fail(
+            "Pick a different folder — that location looks like it's inside Windows, Program Files, or Chud's current data folder".to_string(),
+        );
+    }
+
+    json!({ "ok": true, "reason": "", "targetRoot": target_str, "requiredBytes": required, "freeBytes": free })
+}
+
+/// Diagnostics-panel summary for the data-folder settings card.
+#[tauri::command]
+fn data_root_info(_state: tauri::State<Arc<AppState>>) -> serde_json::Value {
+    let current = skins::paths::data_root();
+    let default = skins::paths::default_data_root();
+    json!({
+        "current": current.to_string_lossy(),
+        "default": default.to_string_lossy(),
+        "isCustom": current != default,
+        "sizeBytes": skins::datamove::dir_size(&current),
+        "freeBytesAtCurrent": winutil::free_disk_space_bytes(&current),
+    })
+}
+
+/// Native folder-picker for "Move data folder" — mirrors `pick_mod_file`'s
+/// `spawn_blocking` shape (rfd's dialog is a blocking OS call). `None` on
+/// cancel, same as an undetected target elsewhere in the app.
+#[tauri::command]
+async fn pick_data_folder() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().pick_folder())
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn validate_data_folder(path: String) -> serde_json::Value {
+    validate_data_folder_result(&path)
+}
+
+/// Shared copy -> verify body for `relocate_data_root`/`reset_data_root` —
+/// only the pointer write/removal afterward differs (see call sites). Copy
+/// and verify each run on a blocking thread (potentially many GB) so they
+/// don't stall the async runtime's worker threads. Never deletes `src`: on a
+/// verify failure the partial `dst` is deleted and the source is left as the
+/// only good copy; the pointer is never written before verification passes.
+async fn migrate_data_tree(app: &AppHandle, src: std::path::PathBuf, dst: std::path::PathBuf) -> Result<(), String> {
+    // Clean the destination first so `verify_copy`'s file-count check isn't
+    // tripped by leftover files. This matters for RESET: a prior relocate left
+    // the (now stale) default tree in place, and reset copies back onto it.
+    // Safe for both flows — relocate's target was already validated empty, and
+    // for reset the LIVE data is `src` (the custom location); `dst` is only
+    // ever the stale default here, so wiping it never risks the live copy.
+    let dst_clean = dst.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || std::fs::remove_dir_all(&dst_clean)).await;
+
+    let progress_app = app.clone();
+    let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let mut on_progress = move |done: u64, total: u64| {
+        let finished = total > 0 && done >= total;
+        if finished || last_emit.elapsed() >= std::time::Duration::from_millis(200) {
+            last_emit = std::time::Instant::now();
+            let _ = progress_app.emit("data-migration-progress", json!({ "phase": "copying", "done": done, "total": total }));
+        }
+    };
+
+    let (src_c, dst_c) = (src.clone(), dst.clone());
+    let copy_result =
+        tauri::async_runtime::spawn_blocking(move || skins::datamove::copy_tree(&src_c, &dst_c, &mut on_progress))
+            .await
+            .map_err(|e| e.to_string())?;
+    if let Err(e) = copy_result {
+        let _ = std::fs::remove_dir_all(&dst); // best-effort cleanup of the partial copy
+        return Err(e.to_string());
+    }
+
+    let (src_v, dst_v) = (src.clone(), dst.clone());
+    let verify_result = tauri::async_runtime::spawn_blocking(move || skins::datamove::verify_copy(&src_v, &dst_v))
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Err(reason) = verify_result {
+        let _ = std::fs::remove_dir_all(&dst); // never point the pointer at an unverified copy
+        return Err(reason);
+    }
+
+    let _ = app.emit("data-migration-progress", json!({ "phase": "done" }));
+    Ok(())
+}
+
+/// Move the data folder to `path` (nested under one more `Chud` subfolder).
+/// The pointer is written ONLY after `verify_copy` passes; the source tree
+/// is never deleted — the user cleans it up later via `delete_old_data_root`
+/// once they've confirmed everything still works.
+#[tauri::command]
+async fn relocate_data_root(path: String, app: AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    data_migration_guard(&state)?;
+
+    let validation = validate_data_folder_result(&path);
+    if !validation["ok"].as_bool().unwrap_or(false) {
+        return Err(validation["reason"].as_str().unwrap_or("That folder can't be used").to_string());
+    }
+
+    let src = skins::paths::data_root();
+    let dst = std::path::PathBuf::from(&path).join("Chud");
+    if src == dst {
+        return Err("That's already the current data folder.".to_string());
+    }
+
+    migrate_data_tree(&app, src.clone(), dst.clone()).await?;
+
+    skins::paths::write_pointer(&dst).map_err(|e| e.to_string())?;
+
+    let _ = app.emit(
+        "notification",
+        json!({
+            "title": "Data folder moved",
+            "message": format!(
+                "Restart Chud to finish. Your old data is still at {} — you can delete it once everything works.",
+                src.display()
+            ),
+            "tone": "success",
+        }),
+    );
+
+    Ok(())
+}
+
+/// Move the data folder back to the default `%LOCALAPPDATA%\Chud` and
+/// remove the pointer. Same copy -> verify -> (pointer) ordering as
+/// `relocate_data_root`, just in reverse; the custom-location source is
+/// never deleted here either.
+#[tauri::command]
+async fn reset_data_root(app: AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    data_migration_guard(&state)?;
+
+    let src = skins::paths::data_root();
+    let dst = skins::paths::default_data_root();
+    if src == dst {
+        return Ok(()); // already on the default root
+    }
+
+    migrate_data_tree(&app, src.clone(), dst.clone()).await?;
+
+    skins::paths::remove_pointer().map_err(|e| e.to_string())?;
+
+    let _ = app.emit(
+        "notification",
+        json!({
+            "title": "Data folder reset",
+            "message": format!(
+                "Restart Chud to finish. Your custom-location data is still at {} — you can delete it once everything works.",
+                src.display()
+            ),
+            "tone": "success",
+        }),
+    );
+
+    Ok(())
+}
+
+/// Safety-gated cleanup the UI offers only after a successful move/reset and
+/// restart — never the currently-active data root, and only something that
+/// actually looks like a Chud data tree.
+#[tauri::command]
+async fn delete_old_data_root(path: String, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    data_migration_guard(&state)?;
+
+    let target = std::path::PathBuf::from(&path);
+    let current = skins::paths::data_root();
+    if target == current {
+        return Err("Refusing to delete the active data folder.".to_string());
+    }
+
+    let looks_like_chud_tree = target.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case("Chud"))
+        || target.join("mods").is_dir()
+        || target.join("injection").is_dir();
+    if !looks_like_chud_tree {
+        return Err("That doesn't look like a Chud data folder — refusing to delete it.".to_string());
+    }
+
+    tauri::async_runtime::spawn_blocking(move || std::fs::remove_dir_all(&target))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// Relaunch the app (Tauri v2's `process::restart`, which spawns a fresh
+/// copy of the current binary then exits this one) — offered after a
+/// relocate/reset so the new `data_root()` resolution takes effect.
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    tauri::process::restart(&app.env());
+}
+
+// ============================================================
 // Skins control panel — see `docs/SKINS_PORT.md` §5. These commands are thin
 // wrappers over the skins subsystem; none re-derive logic that lives in
 // `skins::*`. Party state has no push event to the Tauri webview — the
@@ -3241,7 +3520,14 @@ pub fn run() {
             announcer_studio_slots,
             announcer_studio_build,
             updater_check,
-            updater_install
+            updater_install,
+            data_root_info,
+            pick_data_folder,
+            validate_data_folder,
+            relocate_data_root,
+            reset_data_root,
+            delete_old_data_root,
+            restart_app
         ])
         .setup(|app| {
             let handle = app.handle().clone();

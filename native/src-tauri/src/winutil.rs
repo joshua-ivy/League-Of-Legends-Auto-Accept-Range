@@ -126,6 +126,38 @@ pub fn free_disk_space_bytes(path: &std::path::Path) -> Option<u64> {
     Some(free_available)
 }
 
+/// True only for a fixed local drive (`DRIVE_FIXED`) — used to steer the
+/// relocatable-data-folder picker away from network shares/USB sticks, which
+/// are too slow for skin injection's per-game overlay build.
+#[cfg(windows)]
+pub fn is_fixed_local_drive(path: &std::path::Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, PathBuf};
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+
+    // `DRIVE_FIXED`'s value (windows::Win32::System::WindowsProgramming::DRIVE_FIXED,
+    // = 3) — hardcoded rather than enabling that whole feature for one constant.
+    const DRIVE_FIXED: u32 = 3;
+
+    // GetDriveTypeW wants the drive root ("C:\" / "\\server\share\"), not an
+    // arbitrary path — pull the prefix straight off `path` so this also works
+    // for a not-yet-created folder. Falls back to the nearest existing
+    // ancestor for a path with no drive prefix (e.g. already-relative input).
+    let root = match path.components().next() {
+        Some(Component::Prefix(prefix)) => {
+            let mut p = PathBuf::from(prefix.as_os_str());
+            p.push(std::path::MAIN_SEPARATOR.to_string());
+            p
+        }
+        _ => path.ancestors().find(|p| p.exists()).map(PathBuf::from).unwrap_or_else(|| path.to_path_buf()),
+    };
+
+    let mut wide: Vec<u16> = root.as_os_str().encode_wide().collect();
+    wide.push(0);
+    unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) == DRIVE_FIXED }
+}
+
 // Non-Windows fallbacks so the crate still type-checks off-Windows.
 #[cfg(not(windows))]
 pub fn is_admin() -> bool {
@@ -148,4 +180,8 @@ pub fn relaunch_as_admin() {}
 #[cfg(not(windows))]
 pub fn free_disk_space_bytes(_path: &std::path::Path) -> Option<u64> {
     None
+}
+#[cfg(not(windows))]
+pub fn is_fixed_local_drive(_path: &std::path::Path) -> bool {
+    true
 }
