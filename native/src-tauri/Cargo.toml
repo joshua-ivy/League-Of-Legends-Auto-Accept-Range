@@ -45,6 +45,7 @@ rand = "0.8"
 ed25519-dalek = { version = "2", features = ["rand_core"] } # party-mode selection signing (P0-F)
 regex = "1"
 junction = "1"                     # NTFS junctions for the extract-cache (S3)
+rfd = "0.15"                       # native open-file dialog for Import Mod (pick_mod_file)
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

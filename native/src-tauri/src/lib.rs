@@ -2487,6 +2487,113 @@ async fn library_set_target_skin(
     Ok(())
 }
 
+// ── Import Mod: guided local install of a .fantome/.zip the user already has ──
+// (replaces the old "drop it in mods\skins\{champId*1000}\ yourself" workflow —
+// the picker + modal (native/ui/src/library.js) resolve champ + target skin,
+// then this files it exactly like a Library download and registers the same
+// `InstalledMod` record so it shows on the in-client Custom Mods button.
+
+/// Native open-file dialog for "Import Mod", filtered to mod archives. `rfd`'s
+/// dialog is a blocking OS call — `spawn_blocking` keeps it off the async
+/// runtime's worker threads while it's open. `None` on cancel or dialog error;
+/// the caller (the UI) just no-ops on that, same as an undetected target.
+#[tauri::command]
+async fn pick_mod_file() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().add_filter("Mod", &["fantome", "zip"]).pick_file())
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Best-effort skin prefill for the Import Mod modal — the same offline
+/// chunk-hash scan `place_library_mod` runs at Library download time, applied
+/// to a file straight from the picker (not yet copied anywhere). `None` (no
+/// League client running, or no single confident chunk match) just leaves the
+/// modal's skin dropdown on "Auto".
+#[tauri::command]
+async fn detect_mod_target(file_path: String, champion_id: i64) -> Option<i64> {
+    skins::injection::target_detect::detect_target_skin_offline(std::path::Path::new(&file_path), champion_id).await
+}
+
+/// Core of `import_mod`, factored out so it's unit-testable without AppState or
+/// the real user-data dir: validate the archive, resolve the target `skins/`
+/// slot, write the file under `mods_root`, and build the `InstalledMod` record.
+/// Returns (record, sanitized stem, relative file path). `skin_id` None or a
+/// base id (`% 1000 == 0`) files under the champion's base placeholder ("Auto").
+fn place_imported_mod(
+    bytes: &[u8],
+    champion_id: i64,
+    skin_id: Option<i64>,
+    name: &str,
+    champ: &str,
+    fallback_stem: &str,
+    mods_root: &std::path::Path,
+) -> Result<(config::InstalledMod, String, String), String> {
+    if zip::ZipArchive::new(std::io::Cursor::new(bytes)).is_err() {
+        return Err("That file isn't a valid mod archive.".to_string());
+    }
+    let rel_dir = match skin_id.filter(|id| id % 1000 != 0) {
+        Some(sid) => std::path::PathBuf::from("skins").join(sid.to_string()),
+        None => std::path::PathBuf::from("skins").join((champion_id * 1000).to_string()),
+    };
+    let dir = mods_root.join(&rel_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem = sanitize_mod_filename(name, fallback_stem);
+    let file_name = format!("{stem}.fantome");
+    std::fs::write(dir.join(&file_name), bytes).map_err(|e| e.to_string())?;
+    let rel_file = rel_dir.join(&file_name).to_string_lossy().replace('\\', "/");
+    let record = config::InstalledMod {
+        name: name.to_string(),
+        champ: champ.to_string(),
+        version: "1.0.0".into(),
+        size_mb: (bytes.len() as f64) / 1_048_576.0,
+        file: rel_file.clone(),
+        scan_verdict: String::new(),
+        scan_sha: String::new(),
+        target_skin_id: skin_id,
+    };
+    Ok((record, stem, rel_file))
+}
+
+/// Guided "Import Mod": file a user-supplied `.fantome`/`.zip` into the right
+/// `mods/skins/` slot and register it exactly like a Library install
+/// (`place_library_mod`) does, so it shows on the in-client Custom Mods button
+/// and gets picked up by injection like any other installed mod. `skin_id`
+/// `None` (or a base id, `% 1000 == 0`) is "Auto / let Chud decide" — the mod
+/// lands on the champion's base placeholder and injection's game-time
+/// detection applies it, same as an unresolved Library download.
+#[tauri::command]
+async fn import_mod(
+    file_path: String,
+    champion_id: i64,
+    skin_id: Option<i64>,
+    name: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    use skins::slog::log_info;
+    let src = std::path::PathBuf::from(&file_path);
+    let bytes = tokio::fs::read(&src).await.map_err(|_| "That file isn't a valid mod archive.".to_string())?;
+    // Cosmetic only (Installed-list display) — best-effort from the local catalog.
+    let champ = skins::favorites::catalog(None).into_iter().find(|c| c.champ_id == champion_id).map(|c| c.champ_name).unwrap_or_default();
+    // Fall back to the source file's own stem so a blank Name still files sanely.
+    let fallback = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "imported-mod".to_string());
+    let (record, stem, rel_file) =
+        place_imported_mod(&bytes, champion_id, skin_id, &name, &champ, &fallback, &skins::paths::mods_dir())?;
+
+    let mut c = state.config.lock_safe();
+    let mut mod_id = format!("local-{}", stem.to_lowercase().replace(' ', "-"));
+    let mut n = 2;
+    while c.library.installed.contains_key(&mod_id) {
+        mod_id = format!("local-{}-{n}", stem.to_lowercase().replace(' ', "-"));
+        n += 1;
+    }
+    c.library.installed.insert(mod_id, record);
+    c.save().map_err(|e| e.to_string())?;
+    log_info!("[LIBRARY] imported '{name}' -> mods/{rel_file}");
+    Ok(())
+}
+
 /// Import the current-patch best runes + summoner spells + item build for your
 /// locked champion into the live client, via the runes Worker + the local LCU.
 /// Manual trigger for an "Import build" button (`spawn_runes_auto_import` calls
@@ -2741,6 +2848,9 @@ pub fn run() {
             library_install,
             library_remove,
             library_set_target_skin,
+            pick_mod_file,
+            detect_mod_target,
+            import_mod,
             library_bundles,
             library_install_bundle,
             modscan_rescan,
@@ -2975,4 +3085,79 @@ pub fn run() {
                 skins::injection::process::kill_all_modtools_processes_os();
             }
         });
+}
+
+#[cfg(test)]
+mod import_mod_tests {
+    use super::*;
+
+    /// A minimal but VALID zip — what `place_imported_mod`'s archive check accepts.
+    fn tiny_zip() -> Vec<u8> {
+        use std::io::Write;
+        let mut cur = std::io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut cur);
+            zw.start_file("info.json", zip::write::SimpleFileOptions::default()).unwrap();
+            zw.write_all(b"{\"Name\":\"test\"}").unwrap();
+            zw.finish().unwrap();
+        }
+        cur.into_inner()
+    }
+
+    #[test]
+    fn imports_under_target_skin_and_builds_record() {
+        let root = std::env::temp_dir().join("chud_import_test_skin");
+        let _ = std::fs::remove_dir_all(&root);
+        let bytes = tiny_zip();
+        // Aphelios champ 523, explicit non-base target skin 523001.
+        let (rec, stem, rel) =
+            place_imported_mod(&bytes, 523, Some(523001), "Ryley Aphelios", "Aphelios", "fallback", &root).unwrap();
+        assert_eq!(rel, format!("skins/523001/{stem}.fantome"));
+        assert!(
+            root.join("skins").join("523001").join(format!("{stem}.fantome")).exists(),
+            "file must land under the target skin folder"
+        );
+        assert_eq!(rec.target_skin_id, Some(523001));
+        assert_eq!(rec.file, rel);
+        assert_eq!(rec.name, "Ryley Aphelios");
+        assert_eq!(rec.champ, "Aphelios");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn auto_files_under_base_placeholder() {
+        let root = std::env::temp_dir().join("chud_import_test_base");
+        let _ = std::fs::remove_dir_all(&root);
+        let bytes = tiny_zip();
+        // "Auto" (skin_id None) -> base placeholder champ*1000 = 523000.
+        let (rec, stem, rel) =
+            place_imported_mod(&bytes, 523, None, "Some Mod", "Aphelios", "fallback", &root).unwrap();
+        assert_eq!(rel, format!("skins/523000/{stem}.fantome"));
+        assert!(root.join("skins").join("523000").join(format!("{stem}.fantome")).exists());
+        assert_eq!(rec.target_skin_id, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn base_skin_pick_files_under_placeholder_but_keeps_explicit_target() {
+        let root = std::env::temp_dir().join("chud_import_test_basepick");
+        let _ = std::fs::remove_dir_all(&root);
+        let bytes = tiny_zip();
+        // Explicit "Base skin" = Some(523000): %1000==0 -> base placeholder folder,
+        // but target_skin_id stays the explicit value (two independent rules).
+        let (rec, _stem, rel) =
+            place_imported_mod(&bytes, 523, Some(523000), "Base Mod", "Aphelios", "fb", &root).unwrap();
+        assert!(rel.starts_with("skins/523000/"));
+        assert_eq!(rec.target_skin_id, Some(523000));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejects_non_zip() {
+        let root = std::env::temp_dir().join("chud_import_test_bad");
+        let r = place_imported_mod(b"definitely not a zip file", 523, None, "x", "Aphelios", "fb", &root);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("valid mod archive"));
+        assert!(!root.exists(), "a rejected archive must not create any folder/file");
+    }
 }

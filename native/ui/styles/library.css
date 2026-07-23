@@ -181,3 +181,10 @@
 .lb-scan-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .lb-scan-foot { font-family: var(--font-mono); font-size: 9.5px; color: #6b6b96; }
 .lb-scan-tag { margin-left: 8px; color: #7ceeff; }
+
+/* Import Mod (modal opened from the Library header's + Import Mod button) */
+.lb-import-field { display: flex; flex-direction: column; gap: 5px; }
+.lb-import-label { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #6b6b96; }
+.lb-import-select, .lb-import-input { background: rgba(6,6,20,0.55); border: 1px solid rgba(255,255,255,0.10); border-radius: 8px; padding: 9px 11px; font-size: 12.5px; font-family: inherit; color: #f2f2ff; outline: none; }
+.lb-import-select:focus, .lb-import-input:focus { border-color: rgba(255,61,154,0.45); }
+.lb-import-select:disabled { opacity: .5; cursor: not-allowed; }

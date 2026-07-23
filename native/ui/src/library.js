@@ -8,6 +8,11 @@
   const S = window.ChudShared;
   const esc = S.esc;
   const inv = S.invoke;
+  // `import_mod` returns `Result<(), String>` — shared.js's `invoke` swallows
+  // the error text (by design, see shared.js), so its failure path calls
+  // `TAURI.invoke` directly to surface the real reason in the toast (same
+  // pattern main.js uses for the party-mode commands).
+  const TAURI = window.__TAURI__ && window.__TAURI__.core;
 
   const CI = (id) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/${Number(id) || 0}.png`;
   const CAT_DISPLAY = { champion_skin: "Champion skins", map_skin: "Maps", ui: "HUD & UI", vfx: "VFX", announcer: "Announcer", voiceover: "Voiceover", sfx: "Sound FX", font: "Fonts", loading_screen: "Loading screens", miscellaneous: "Other" };
@@ -41,6 +46,17 @@
     // fetched once per champion and reused across opens.
     pickTarget: null,
     pickSkinsCache: {},
+    // ── Import Mod (guided local install of a .fantome/.zip) ──
+    // `importCatalog` is `skins_catalog`'s champions list (id/name/skins),
+    // fetched once and cached — it doubles as both the Champion dropdown and
+    // the Skin dropdown's source, so opening the modal a second time is instant.
+    importOpen: false,
+    importFile: null, // absolute path returned by `pick_mod_file`
+    importChampId: null,
+    importSkinId: "auto", // "auto" | "base" | a skin_id string
+    importName: "",
+    importBusy: false,
+    importCatalog: null,
   };
   let root = null;
 
@@ -360,7 +376,7 @@
     else if (st.tab === "favs") body = favsHtml();
     else body = `<div class="lb-browse">${railHtml()}${browseHtml()}</div>`;
     return `<div class="lb-wrap">
-      <div class="lb-head"><span class="section-label">SKIN LIBRARY</span><span class="lb-rule"></span><div class="lb-seg">${tabs}</div></div>
+      <div class="lb-head"><span class="section-label">SKIN LIBRARY</span><span class="lb-rule"></span><div class="lb-seg">${tabs}</div><button class="btn sm primary" data-import="1">+ Import Mod</button></div>
       <div class="fade-in">${body}</div>
     </div>`;
   }
@@ -498,6 +514,141 @@
     paint();
   }
 
+  // ── Import Mod ──
+  // Replaces the old "drop it in mods\skins\{champId*1000}\ yourself" workflow:
+  // pick a file, pick the champion + skin in a small modal (skin dropdown
+  // auto-prefilled by an offline chunk-hash scan when possible), then
+  // `import_mod` files it and registers it exactly like a Library install.
+
+  // Best-effort filename -> display name: strip the extension and a trailing
+  // version-looking suffix ("Cool Skin v1.2", "Cool Skin-1.0.3"). Good enough
+  // for a prefill the user can still edit; never returns an empty string.
+  function baseNameFromPath(p) {
+    const base = String(p || "").split(/[\\/]/).pop() || "";
+    const noExt = base.replace(/\.(fantome|zip)$/i, "");
+    const stripped = noExt.replace(/[\s_.-]*v?\d+(?:\.\d+){0,3}$/i, "").trim();
+    return stripped || noExt || base;
+  }
+
+  async function fetchImportCatalog() {
+    if (st._importCatalogLoading) return;
+    st._importCatalogLoading = true;
+    try {
+      const r = await inv("skins_catalog");
+      const champs = (r && r.champions) || [];
+      st.importCatalog = champs.slice().sort((a, b) => a.champ_name.localeCompare(b.champ_name));
+    } catch (e) {
+      console.error("skins_catalog failed", e);
+      st.importCatalog = [];
+    }
+    st._importCatalogLoading = false;
+    if (st.importOpen) paint();
+  }
+
+  async function openImportModal() {
+    const path = await inv("pick_mod_file");
+    if (!path) return;
+    st.importOpen = true;
+    st.importFile = path;
+    st.importChampId = null;
+    st.importSkinId = "auto";
+    st.importName = baseNameFromPath(path);
+    st.importBusy = false;
+    paint();
+    if (st.importCatalog === null) fetchImportCatalog();
+  }
+
+  function closeImportModal() {
+    st.importOpen = false;
+    st.importFile = null;
+    st.importChampId = null;
+    st.importSkinId = "auto";
+    st.importName = "";
+    st.importBusy = false;
+  }
+
+  // Champion changed: reset the skin choice to Auto, then re-run detection
+  // for the new champion — a stale guess from the previous champion would be
+  // actively wrong here, unlike leaving it on Auto.
+  async function onImportChampChange(champId) {
+    st.importChampId = champId || null;
+    st.importSkinId = "auto";
+    paint();
+    if (!champId || !st.importFile) return;
+    try {
+      const detected = await inv("detect_mod_target", { filePath: st.importFile, championId: champId });
+      if (detected == null || st.importChampId !== champId) return;
+      const champ = (st.importCatalog || []).find((c) => c.champ_id === champId);
+      const known = champ && (champ.skins || []).some((s) => s.skin_id === detected);
+      if (known) { st.importSkinId = String(detected); paint(); }
+    } catch (e) { /* best-effort — stays on Auto */ }
+  }
+
+  async function submitImport() {
+    if (st.importBusy || !st.importChampId) return;
+    const champId = st.importChampId;
+    const nameEl = document.getElementById("lbImportName");
+    const name = ((nameEl && nameEl.value) || st.importName || "").trim() || "Imported mod";
+    const skinSel = st.importSkinId;
+    const skinId = skinSel === "auto" ? null : skinSel === "base" ? champId * 1000 : Number(skinSel);
+    st.importBusy = true; paint();
+    try {
+      if (TAURI) {
+        await TAURI.invoke("import_mod", { filePath: st.importFile, championId: champId, skinId, name });
+      } else {
+        // Browser-preview (no Tauri backend): mock the installed record locally.
+        const champ = (st.importCatalog || []).find((c) => c.champ_id === champId);
+        st.installed[`local-preview-${Date.now()}`] = { name, champ: champ ? champ.champ_name : "", version: "1.0.0", size_mb: 0, target_skin_id: skinId };
+      }
+      closeImportModal();
+      toast("Mod imported", `${name} — pick it from the Custom Mods button in champ select.`, "success");
+      if (TAURI) { try { const state = await inv("library_state"); if (state) { st.installed = state.installed || st.installed; st.favs = state.favs || st.favs; } } catch (e) {} }
+      st.tab = "installed";
+    } catch (e) {
+      st.importBusy = false;
+      toast("Import failed", String(e || "Couldn't import that mod."), "danger");
+    }
+    paint();
+  }
+
+  function importModalHtml() {
+    const champs = st.importCatalog;
+    const champOptions = champs === null
+      ? `<option value="">Loading champions…</option>`
+      : `<option value="">Select a champion…</option>` + champs.map((c) => `<option value="${c.champ_id}" ${st.importChampId === c.champ_id ? "selected" : ""}>${esc(c.champ_name)}</option>`).join("");
+    const champ = champs && st.importChampId ? champs.find((c) => c.champ_id === st.importChampId) : null;
+    // Real skins only (base excluded) — "Auto" and "Base skin" cover the base
+    // case explicitly, same split `pickSkinModalHtml` uses above.
+    const realSkins = champ ? (champ.skins || []).filter((s) => s.skin_id % 1000 !== 0) : [];
+    const skinOptions = `<option value="auto" ${st.importSkinId === "auto" ? "selected" : ""}>Auto — let Chud decide</option>` +
+      `<option value="base" ${st.importSkinId === "base" ? "selected" : ""}>Base skin</option>` +
+      realSkins.map((s) => `<option value="${s.skin_id}" ${st.importSkinId === String(s.skin_id) ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+    const fileName = (st.importFile || "").split(/[\\/]/).pop();
+    return `<div class="lb-backdrop" data-close="1"><div class="lb-modal lb-scan-modal" role="dialog">
+      <div class="lb-mtop"></div>
+      <div class="lb-mhead"><span class="lb-mtab">Import Mod</span><button class="lb-mx" data-close="1">✕</button></div>
+      <div class="lb-scan-body">
+        <div class="lb-scan-sub">${esc(fileName || "")}</div>
+        <div class="lb-import-field">
+          <label class="lb-import-label" for="lbImportChamp">Champion</label>
+          <select class="lb-import-select" id="lbImportChamp" data-import-champ="1" ${champs === null ? "disabled" : ""}>${champOptions}</select>
+        </div>
+        <div class="lb-import-field">
+          <label class="lb-import-label" for="lbImportSkin">Skin</label>
+          <select class="lb-import-select" id="lbImportSkin" data-import-skin="1" ${champ ? "" : "disabled"}>${skinOptions}</select>
+        </div>
+        <div class="lb-import-field">
+          <label class="lb-import-label" for="lbImportName">Name</label>
+          <input class="lb-import-input" id="lbImportName" type="text" value="${esc(st.importName || "")}" maxlength="80" placeholder="Mod name">
+        </div>
+        <div class="lb-scan-actions">
+          <button class="btn" data-close="1" ${st.importBusy ? "disabled" : ""}>Cancel</button>
+          <button class="btn primary" data-import-submit="1" ${st.importBusy || !st.importChampId ? "disabled" : ""}>${st.importBusy ? "Importing…" : "Import"}</button>
+        </div>
+      </div>
+    </div></div>`;
+  }
+
   // ── render + events ──
   // The modal renders into document.body, NOT #page — #page is `.content-inner
   // .fade-in`, whose animated transform makes it a containing block for
@@ -510,8 +661,10 @@
   function paint() {
     if (!root) return;
     root.innerHTML = pageHtml();
-    // Only one modal is ever shown at a time: ModScan block > pick-skin > detail.
-    ensureModalRoot().innerHTML = st.scanBlock
+    // Only one modal is ever shown at a time: import > ModScan block > pick-skin > detail.
+    ensureModalRoot().innerHTML = st.importOpen
+      ? importModalHtml()
+      : st.scanBlock
       ? scanBlockModalHtml(st.scanBlock)
       : st.pickTarget
       ? pickSkinModalHtml(st.pickTarget)
@@ -541,10 +694,18 @@
     // Closing a modal only dismisses the top one — if the detail modal was
     // open underneath (e.g. "Pick skin" was reached from there), it
     // reappears rather than also getting dismissed.
-    on("[data-close]", "onclick", (e) => { if (e.target === e.currentTarget || e.currentTarget.classList.contains("lb-mx")) { if (st.scanBlock) st.scanBlock = null; else if (st.pickTarget) st.pickTarget = null; else st.selId = null; paint(); } });
+    on("[data-close]", "onclick", (e) => { if (e.target === e.currentTarget || e.currentTarget.classList.contains("lb-mx")) { if (st.importOpen) closeImportModal(); else if (st.scanBlock) st.scanBlock = null; else if (st.pickTarget) st.pickTarget = null; else st.selId = null; paint(); } });
     on("[data-pick]", "onclick", (e) => { e.stopPropagation(); const el = e.currentTarget; openPickSkin(el.dataset.pick, el.dataset.champid, el.dataset.champname); });
     on("[data-setskin]", "onclick", (e) => { e.stopPropagation(); setTargetSkin(Number(e.currentTarget.dataset.setskin)); });
     on("[data-install-force]", "onclick", (e) => { e.stopPropagation(); const id = e.currentTarget.dataset.installForce; st.scanBlock = null; install(id, true); });
+    on("[data-import]", "onclick", (e) => { e.stopPropagation(); openImportModal(); });
+    on("[data-import-champ]", "onchange", (e) => { onImportChampChange(Number(e.currentTarget.value) || null); });
+    on("[data-import-skin]", "onchange", (e) => { st.importSkinId = e.currentTarget.value; });
+    on("[data-import-submit]", "onclick", (e) => { e.stopPropagation(); submitImport(); });
+    // Live-bound (no paint() on keystroke) so typing isn't interrupted by the
+    // full-innerHTML repaint a champion/skin change triggers elsewhere in the modal.
+    const importName = document.getElementById("lbImportName");
+    if (importName) importName.oninput = () => { st.importName = importName.value; };
     on("[data-video]", "onclick", (e) => {
       e.stopPropagation();
       const vid = e.currentTarget.dataset.video;
