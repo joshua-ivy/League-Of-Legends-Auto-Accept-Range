@@ -100,6 +100,9 @@ enum OutCmd {
     Join { name: String, pubkey: String },
     Skin(Option<Value>),
     Leave,
+    /// Identity-less roster ping (S6 presence nudge, `party::presence`) — the
+    /// relay just re-broadcasts the room's member list, no name/pubkey ever sent.
+    Presence,
 }
 
 /// Members-changed callback type — `set_on_members_changed`'s Rust
@@ -201,6 +204,13 @@ impl PartyRelay {
         self.shared.members.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Room member count, including this connection itself (the server's
+    /// roster has no notion of "self" — see `party::presence`, which nudges
+    /// on `> 1`). Cheaper than cloning the whole `members()` list.
+    pub fn member_count(&self) -> usize {
+        self.shared.members.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
     /// This connection's server-assigned `(member_id, epoch)`, once the
     /// `welcome` has arrived. `None` briefly right after connect (before the
     /// `welcome` lands) or between connections during a reconnect.
@@ -218,6 +228,13 @@ impl PartyRelay {
     /// `PartyRelay.send_skin` — broadcast our current selection (`None` clears it).
     pub fn send_skin(&self, skin: Option<Value>) {
         let _ = self.cmd_tx.send(OutCmd::Skin(skin));
+    }
+
+    /// Announce our presence with NO identity — never call `join` on a
+    /// connection meant to stay identity-less (`party::presence`). The relay
+    /// just re-broadcasts the room's member list on receipt.
+    pub fn send_presence(&self) {
+        let _ = self.cmd_tx.send(OutCmd::Presence);
     }
 
     /// `PartyRelay.disconnect` — leave the room and stop the connection task
@@ -338,6 +355,11 @@ async fn run_one_connection(
                     Some(OutCmd::Skin(skin)) => {
                         let payload = json!({"type":"skin","skin":skin});
                         if write.send(Message::Text(payload.to_string())).await.is_err() {
+                            return false;
+                        }
+                    }
+                    Some(OutCmd::Presence) => {
+                        if write.send(Message::Text(json!({"type":"presence"}).to_string())).await.is_err() {
                             return false;
                         }
                     }

@@ -3391,6 +3391,13 @@ pub fn run() {
             let party_manager = skins::party::manager::PartyManager::new(&handle, st.skins.clone());
             *st.skins_party.lock_safe() = Some(party_manager.clone());
 
+            // Presence nudge: always spawned (like the phase engine) — it
+            // self-gates on consent/phase/party-mode-enabled every poll, so it's
+            // a cheap no-op outside a lobby and makes zero relay connections
+            // before consent. Cloned BEFORE the conditional auto-resume below,
+            // which may move `party_manager` into its own spawned task.
+            skins::party::presence::PresenceDetector::spawn(handle.clone(), party_manager.clone(), st.skins.clone());
+
             // NO auto-connect: zero relay connections until the user has both
             // turned Party on AND accepted the current disclosure version (see
             // docs/PRIVACY-PARTY.md). `enable()` re-checks consent itself — this

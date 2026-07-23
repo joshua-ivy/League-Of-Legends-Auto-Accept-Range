@@ -27,6 +27,14 @@ The relay assigns every connection a random member id; clients cannot claim
 an identity, and selections are signed by your ephemeral session key and
 bound to the room's epoch so they can't be forged or replayed.
 
+**Presence check (Party mode OFF):** even with Party mode off, once you've
+accepted this disclosure Chud holds a lightweight, identity-free connection
+to your lobby's room while you're in a lobby or queue, purely to detect a
+fellow Chud user nearby and suggest turning Party mode on. It sends no name,
+no key, no skin, no identity of any kind — just an anonymous "someone's
+here" ping — and disconnects the moment Party mode is enabled or you leave
+the lobby.
+
 ## Who processes it
 
 The relay is a Cloudflare Worker (Durable Object) operated by the Chud
