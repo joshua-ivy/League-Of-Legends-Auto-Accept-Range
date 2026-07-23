@@ -6,6 +6,7 @@
 
 pub mod announcer_fix;
 pub mod announcer_studio;
+pub mod champ_alias;
 pub mod downloads;
 pub mod favorites;
 pub mod features;

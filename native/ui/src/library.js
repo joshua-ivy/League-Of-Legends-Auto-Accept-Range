@@ -47,7 +47,7 @@
   const st = {
     catalog: null, tab: "browse", q: "", champ: "", cat: "", themes: [],
     workingOnly: true, sort: "trending", railAll: false,
-    selId: null, installed: {}, favs: [], installing: {}, autoUpdate: true,
+    selId: null, installed: {}, favs: [], installing: {}, autoUpdate: true, conflicts: {},
     cats: [], themesList: [],
     bundles: null, bundleInstalling: {},
     // modId -> post-download phase ("converting"), set by the backend's
@@ -149,7 +149,7 @@
     try {
       const [cat, state] = await Promise.all([inv("library_catalog_all"), inv("library_state")]);
       st.catalog = ((cat && cat.mods) || (S.hasBackend ? [] : MOCK_MODS)).map(adapt);
-      if (state) { st.installed = state.installed || {}; st.favs = state.favs || []; st.autoUpdate = state.autoUpdate !== false; }
+      if (state) { st.installed = state.installed || {}; st.favs = state.favs || []; st.autoUpdate = state.autoUpdate !== false; st.conflicts = state.conflicts || {}; }
     } catch (e) { console.error("library load failed", e); st.catalog = []; }
     const cs = new Set(), ts = new Set();
     st.catalog.forEach((m) => { cs.add(m.category); m.themes.forEach((t) => ts.add(t)); });
@@ -294,13 +294,19 @@
       const statusChip = needsPick
         ? `<span class="chip lb-chip-warn" title="Couldn't auto-detect which skin this mod targets"><span class="lb-dot"></span>NEEDS SKIN</span>`
         : `<span class="chip lb-chip-ok"><span class="lb-dot on"></span>WORKING</span>`;
+      // Purely informational — injection is already conflict-safe (explicit
+      // per-path selection), this just flags that another installed mod also
+      // claims this skin slot so the user knows only one applies per game.
+      const conflictChip = rec.target_skin_id != null && st.conflicts[String(rec.target_skin_id)]
+        ? `<span class="chip lb-chip-warn" title="Another installed mod also targets this skin — only one applies per game">⚠ Shares a slot</span>`
+        : "";
       const actionCell = needsPick
         ? `<button class="btn sm" data-pick="${esc(id)}" data-champid="${esc(m.champId || "")}" data-champname="${esc(rec.name || id)}">Pick skin</button>`
         : `<span class="lb-inchamp" title="Open the Custom Mods button in champ select when this champion is up">In champ select ✓</span>`;
       return `<div class="lb-irow"><div class="lb-ithumb" style="${thumbStyle(m.id ? m : { id, thumb: null, champId: null, category: "Other" })}" data-open="${esc(id)}">${thumbInner(m.id ? m : { id, thumb: null, champId: null, category: "Other" })}</div>
         <div><div class="lb-name" data-open="${esc(id)}">${esc(rec.name || id)}</div><div class="lb-meta">by <b>${esc(m.author || "unknown")}</b>${rec.champ ? " · " + esc(rec.champ) : ""} · ${(rec.size_mb || 0).toFixed(1)} MB</div></div>
         <div class="lb-ver">v${esc(rec.version || "1.0.0")}</div>
-        <div>${statusChip}</div>
+        <div class="lb-status-cell">${statusChip}${conflictChip}</div>
         <div class="lb-iactions">${actionCell}<button class="lb-trash" data-remove="${esc(id)}" title="Remove"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2m-9 0 1 14h8l1-14"/></svg></button></div>
       </div>`;
     }).join("");
@@ -653,7 +659,7 @@
       }
       closeImportModal();
       toast("Mod imported", `${name} — pick it from the Custom Mods button in champ select.`, "success");
-      if (TAURI) { try { const state = await inv("library_state"); if (state) { st.installed = state.installed || st.installed; st.favs = state.favs || st.favs; } } catch (e) {} }
+      if (TAURI) { try { const state = await inv("library_state"); if (state) { st.installed = state.installed || st.installed; st.favs = state.favs || st.favs; st.conflicts = state.conflicts || st.conflicts; } } catch (e) {} }
       st.tab = "installed";
     } catch (e) {
       st.importBusy = false;

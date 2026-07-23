@@ -21,6 +21,7 @@ mod stats;
 mod telemetry;
 mod winutil;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -1743,11 +1744,29 @@ async fn library_catalog_all(state: tauri::State<'_, Arc<AppState>>) -> Result<s
     net::get_json_checked(&http, &url, &allowed, 16 * 1024 * 1024).await
 }
 
+/// Group installed mod ids by `target_skin_id`, keeping only skins targeted by
+/// more than one mod — a purely informational "shares a slot" signal for the
+/// Library UI (injection itself is already conflict-safe: it only ever loads
+/// the explicitly selected path per skin slot).
+fn compute_mod_conflicts(installed: &HashMap<String, config::InstalledMod>) -> HashMap<i64, Vec<String>> {
+    let mut by_skin: HashMap<i64, Vec<String>> = HashMap::new();
+    for (mod_id, rec) in installed {
+        if let Some(skin_id) = rec.target_skin_id {
+            by_skin.entry(skin_id).or_default().push(mod_id.clone());
+        }
+    }
+    by_skin.retain(|_, ids| ids.len() > 1);
+    by_skin
+}
+
 /// Installed mods + favorites + auto-update flag (for UI hydration).
 #[tauri::command]
 fn library_state(state: tauri::State<Arc<AppState>>) -> serde_json::Value {
     let c = state.config.lock_safe();
-    json!({ "installed": c.library.installed, "favs": c.library.favs, "autoUpdate": c.library.auto_update })
+    // JSON object keys must be strings — stringify the skin ids for the wire format.
+    let conflicts: HashMap<String, Vec<String>> =
+        compute_mod_conflicts(&c.library.installed).into_iter().map(|(skin_id, ids)| (skin_id.to_string(), ids)).collect();
+    json!({ "installed": c.library.installed, "favs": c.library.favs, "autoUpdate": c.library.auto_update, "conflicts": conflicts })
 }
 
 /// Toggle a favorite mod; returns the updated fav list.
@@ -1851,8 +1870,9 @@ fn migrate_champion_category_mods(cfg: &mut config::Config) -> bool {
 /// `place_library_mod` does at download time and, on a hit, re-files the mod via
 /// `library_set_target_skin` — the exact move + record-update path a manual
 /// "Pick skin" takes. Only ever touches `target_skin_id: None` mods sitting on a
-/// base placeholder, so re-running is harmless. Needs the LCU up to resolve the
-/// champion alias; the caller retries until it is (`spawn_library_target_migration`).
+/// base placeholder, so re-running is harmless. `detect_target_skin_offline` no
+/// longer needs the LCU (falls back to the bundled alias table), so this can
+/// just run once at startup instead of waiting for League.
 async fn migrate_library_targets(app: &AppHandle) {
     use skins::slog::log_info;
     let mods_root = skins::paths::mods_dir();
@@ -1915,19 +1935,12 @@ async fn migrate_library_targets(app: &AppHandle) {
     }
 }
 
-/// Retries `migrate_library_targets` roughly every 20s, up to 6 tries (~2min),
-/// so the common "launch Chud, then open League" flow still gets migrated —
-/// detection needs the LCU up to resolve the champion alias. Gives up quietly
-/// after that; those mods just keep their "Pick skin" fallback until next launch.
+/// Runs `migrate_library_targets` once at startup — detection is offline now
+/// (falls back to the bundled alias table when League isn't running), so there's
+/// nothing to wait for.
 fn spawn_library_target_migration(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        for _ in 0..6 {
-            if lcu::cached_auth().is_some() {
-                migrate_library_targets(&app).await;
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-        }
+        migrate_library_targets(&app).await;
     });
 }
 
@@ -3318,5 +3331,32 @@ mod import_mod_tests {
         assert!(root.join(&rel).exists());
         assert_eq!(rec.name, long_name);
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+
+    fn mod_at(skin_id: Option<i64>) -> config::InstalledMod {
+        config::InstalledMod { target_skin_id: skin_id, ..Default::default() }
+    }
+
+    #[test]
+    fn only_shared_skin_slots_are_flagged() {
+        let mut installed = HashMap::new();
+        installed.insert("mod_a".to_string(), mod_at(Some(523001)));
+        installed.insert("mod_b".to_string(), mod_at(Some(523001)));
+        installed.insert("mod_c".to_string(), mod_at(Some(523002)));
+        installed.insert("mod_d".to_string(), mod_at(None));
+
+        let conflicts = compute_mod_conflicts(&installed);
+
+        assert_eq!(conflicts.len(), 1);
+        let ids = conflicts.get(&523001).expect("523001 must be flagged as conflicting");
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"mod_a".to_string()));
+        assert!(ids.contains(&"mod_b".to_string()));
+        assert!(!conflicts.contains_key(&523002), "a lone mod on a skin is not a conflict");
     }
 }
