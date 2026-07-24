@@ -1484,6 +1484,11 @@ function navTo(page) {
 
 function onStateChanged() {
   renderTop(); syncReadyCheck();
+  // A mandatory update was held because the user was in a game — install it the
+  // moment they're out (champ select / game ended).
+  if (forcedUpdatePending && !updating && updatePhaseSafe()) {
+    const info = forcedUpdatePending; forcedUpdatePending = null; forceUpdate(info);
+  }
   if (currentPage === "dashboard") patchDashboard();
 }
 const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
@@ -1545,14 +1550,43 @@ async function onStopAll() {
 let pendingUpdate = null;
 let updating = false;
 
+let forcedUpdatePending = null; // a mandatory update waiting for a safe (out-of-game) moment
+
 function showUpdatePill(info) {
   if (!info || !info.version) return;
   pendingUpdate = info;
   const pill = document.getElementById("updatePill");
-  if (!pill) return;
-  pill.innerHTML = `${ico("refresh")}<span>Update ${esc(info.version)}</span>`;
-  pill.style.display = "";
-  pill.onclick = () => openUpdateOverlay();
+  if (pill) {
+    pill.innerHTML = `${ico("refresh")}<span>Update ${esc(info.version)}</span>`;
+    pill.style.display = "";
+    pill.onclick = () => openUpdateOverlay();
+  }
+  // Mandatory push (latest.json "mandatory": true) — force it, no "Later".
+  if (info.mandatory) forceUpdate(info);
+}
+
+// Never yank an update mid-champ-select/game — hold a forced one until safe.
+function updatePhaseSafe() {
+  const p = (state && state.phase) || "";
+  return p !== "ChampSelect" && p !== "GameStart" && p !== "InProgress";
+}
+
+function forceUpdate(info) {
+  pendingUpdate = info;
+  const ov = document.getElementById("updateOverlay");
+  if (!ov) return;
+  document.getElementById("updateTitle").textContent = "Required update";
+  document.getElementById("updateActions").style.display = "none";
+  const later = document.getElementById("updateLater");
+  if (later) later.style.display = "none"; // no deferring a mandatory update
+  ov.style.display = "";
+  if (updatePhaseSafe()) {
+    document.getElementById("updateSub").textContent = `Chud ${esc(info.version)} is required — installing now to keep you up to date.`;
+    startUpdate();
+  } else {
+    document.getElementById("updateSub").textContent = `Chud ${esc(info.version)} is required — it'll install automatically right after your current game.`;
+    forcedUpdatePending = info;
+  }
 }
 
 function openUpdateOverlay() {
@@ -1565,7 +1599,9 @@ function openUpdateOverlay() {
   document.getElementById("updateBar").style.width = "0%";
   document.getElementById("updatePct").textContent = "";
   ov.style.display = "";
-  document.getElementById("updateLater").onclick = () => { if (!updating) ov.style.display = "none"; };
+  const later = document.getElementById("updateLater");
+  later.style.display = ""; // non-mandatory: deferring is allowed
+  later.onclick = () => { if (!updating) ov.style.display = "none"; };
   document.getElementById("updateNow").onclick = () => startUpdate();
 }
 

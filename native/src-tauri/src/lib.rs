@@ -3397,6 +3397,10 @@ async fn runes_import_now(state: tauri::State<'_, Arc<AppState>>) -> Result<serd
 struct UpdateInfo {
     version: String,
     notes: String,
+    /// `"mandatory": true` in latest.json → the UI forces the update (no "Later"),
+    /// installing on launch or right after the current game. For safety/critical
+    /// pushes when everyone must move off the old build.
+    mandatory: bool,
 }
 
 /// On startup, check GitHub Releases for a signed newer version and, if one
@@ -3411,10 +3415,11 @@ async fn run_startup_update_check(app: AppHandle) {
     };
     match updater.check().await {
         Ok(Some(update)) => {
-            eprintln!("[update] newer version {} available", update.version);
+            let mandatory = update.raw_json.get("mandatory").and_then(|v| v.as_bool()).unwrap_or(false);
+            eprintln!("[update] newer version {} available (mandatory={mandatory})", update.version);
             let _ = app.emit(
                 "update-available",
-                json!({ "version": update.version, "notes": update.body.clone().unwrap_or_default() }),
+                json!({ "version": update.version, "notes": update.body.clone().unwrap_or_default(), "mandatory": mandatory }),
             );
         }
         Ok(None) => eprintln!("[update] already up to date"),
@@ -3438,7 +3443,8 @@ async fn updater_check(app: AppHandle) -> Option<UpdateInfo> {
     let updater = app.updater().ok()?;
     match updater.check().await {
         Ok(Some(update)) => {
-            Some(UpdateInfo { version: update.version.clone(), notes: update.body.clone().unwrap_or_default() })
+            let mandatory = update.raw_json.get("mandatory").and_then(|v| v.as_bool()).unwrap_or(false);
+            Some(UpdateInfo { version: update.version.clone(), notes: update.body.clone().unwrap_or_default(), mandatory })
         }
         _ => None,
     }
