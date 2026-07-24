@@ -30,6 +30,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -160,6 +161,110 @@ impl GameIndex {
     fn count(&self, h: u64) -> u32 {
         self.counts.get(&h).copied().unwrap_or(0)
     }
+}
+
+// ── Game-index cache ─────────────────────────────────────────────────────────
+// The game WADs only change on a Riot patch, so re-reading hundreds of WAD TOCs
+// on every mod sweep (~11s) was pure waste — and, when it overlapped an
+// injection, could push a heavy overlay build past the game-suspend safety
+// window (skins then skipped -> default). Build once per patch, reuse from
+// memory (session) and disk (across restarts). Phase 2 will fetch this from a
+// Cloudflare-hosted per-patch index so even the first build is free.
+static INDEX_CACHE: OnceLock<Mutex<Option<(u64, Arc<GameIndex>)>>> = OnceLock::new();
+fn index_cache() -> &'static Mutex<Option<(u64, Arc<GameIndex>)>> {
+    INDEX_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Cheap fingerprint of the game WAD set (paths + sizes) — changes on a Riot
+/// patch, stable otherwise. Metadata-only, so ~instant vs reading every TOC.
+fn game_dir_fingerprint(game_dir: &Path) -> u64 {
+    let root = game_dir.join("DATA").join("FINAL");
+    let mut wads = Vec::new();
+    collect_wads(&root, &mut wads);
+    wads.sort();
+    fn mix(h: &mut u64, bytes: &[u8]) {
+        for &b in bytes {
+            *h ^= b as u64;
+            *h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for w in &wads {
+        mix(&mut h, w.to_string_lossy().as_bytes());
+        let len = std::fs::metadata(w).map(|m| m.len()).unwrap_or(0);
+        mix(&mut h, &len.to_le_bytes());
+    }
+    h
+}
+
+fn index_cache_path() -> PathBuf {
+    crate::skins::paths::state_dir().join("game_wad_index.bin")
+}
+
+/// Compact binary: [fingerprint u64][count u64] then count×[hash u64][n u32].
+fn load_persisted_index(fp: u64) -> Option<Arc<GameIndex>> {
+    let data = std::fs::read(index_cache_path()).ok()?;
+    if data.len() < 16 || u64::from_le_bytes(data[0..8].try_into().ok()?) != fp {
+        return None;
+    }
+    let n = u64::from_le_bytes(data[8..16].try_into().ok()?) as usize;
+    let body = data.get(16..)?;
+    if body.len() < n.checked_mul(12)? {
+        return None;
+    }
+    let mut counts = HashMap::with_capacity(n);
+    for i in 0..n {
+        let o = i * 12;
+        counts.insert(
+            u64::from_le_bytes(body[o..o + 8].try_into().ok()?),
+            u32::from_le_bytes(body[o + 8..o + 12].try_into().ok()?),
+        );
+    }
+    log_info!("[MOD_SCOPE] Reused cached game index ({n} entries) from disk");
+    Some(Arc::new(GameIndex { counts }))
+}
+
+fn persist_index(fp: u64, idx: &GameIndex) {
+    let mut buf = Vec::with_capacity(16 + idx.counts.len() * 12);
+    buf.extend_from_slice(&fp.to_le_bytes());
+    buf.extend_from_slice(&(idx.counts.len() as u64).to_le_bytes());
+    for (&h, &c) in &idx.counts {
+        buf.extend_from_slice(&h.to_le_bytes());
+        buf.extend_from_slice(&c.to_le_bytes());
+    }
+    let path = index_cache_path();
+    if let Some(p) = path.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    let _ = std::fs::write(path, buf);
+}
+
+/// Cached `build_game_index`: memory hit -> disk hit (same patch) -> build once.
+fn build_game_index_cached(game_dir: &Path) -> Option<Arc<GameIndex>> {
+    let fp = game_dir_fingerprint(game_dir);
+    if let Some((k, idx)) = index_cache().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if *k == fp {
+            return Some(idx.clone());
+        }
+    }
+    let idx = load_persisted_index(fp).or_else(|| {
+        let arc = Arc::new(build_game_index(game_dir)?);
+        persist_index(fp, &arc);
+        Some(arc)
+    })?;
+    *index_cache().lock().unwrap_or_else(|e| e.into_inner()) = Some((fp, idx.clone()));
+    Some(idx)
+}
+
+/// Best-effort background pre-warm at startup so the ~11s first build never
+/// lands inside an injection's suspend window. No-op if the game dir isn't
+/// resolvable yet (League closed) — the champ-select sweep builds it then.
+pub fn prewarm_game_index() {
+    std::thread::spawn(|| {
+        if let Some(dir) = crate::skins::lcu_ext::resolve_game_dir() {
+            let _ = build_game_index_cached(&dir);
+        }
+    });
 }
 
 /// Path-hash for a mod entry: hex-named files carry their hash literally;
@@ -409,7 +514,7 @@ fn sweep_inner(app: Option<&AppHandle>) {
     let needs_index = pending.iter().any(|(_, is_announcer)| !is_announcer);
     let index = if needs_index {
         match lcu_ext::resolve_game_dir() {
-            Some(dir) => build_game_index(&dir),
+            Some(dir) => build_game_index_cached(&dir),
             None => {
                 // Announcers below still process; skins stay pending for the
                 // next sweep (ChampSelect entry guarantees the client is up).

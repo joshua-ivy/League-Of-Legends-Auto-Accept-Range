@@ -3510,6 +3510,9 @@ pub fn run() {
     if let Err(e) = skins::init() {
         eprintln!("skins::init failed (continuing without skins subsystem): {e}");
     }
+    // Pre-warm the game-WAD index off the hot path so the first injection of the
+    // session never eats the ~11s build inside its suspend window (see mod_scope).
+    skins::mod_scope::prewarm_game_index();
 
     let config = Config::load();
     let mut stats = Stats::load();

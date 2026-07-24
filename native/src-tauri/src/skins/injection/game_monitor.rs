@@ -56,7 +56,7 @@ const RESUME_VERIFY_WAIT: Duration = Duration::from_millis(100); // GAME_RESUME_
 /// broken client state requiring reboot + repair). 25s still covers every
 /// legitimate build (single-skin <1s; worst multi-mod ~13s) while capping
 /// the damage a pathological build can do.
-const DEFAULT_AUTO_RESUME_SECS: f64 = 25.0;
+const DEFAULT_AUTO_RESUME_SECS: f64 = 35.0;
 /// Consecutive `NtSuspendProcess` failures on the same pid before the
 /// watcher gives up. Repeated failures mean something (anticheat) is
 /// blocking suspension — retrying every 50ms forever just spams the log.
