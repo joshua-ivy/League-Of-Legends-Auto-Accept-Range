@@ -168,8 +168,8 @@ impl GameIndex {
 // on every mod sweep (~11s) was pure waste — and, when it overlapped an
 // injection, could push a heavy overlay build past the game-suspend safety
 // window (skins then skipped -> default). Build once per patch, reuse from
-// memory (session) and disk (across restarts). Phase 2 will fetch this from a
-// Cloudflare-hosted per-patch index so even the first build is free.
+// memory (session) and disk (across restarts), and — via the cloud store below
+// — from a per-patch index the operator publishes so even the first build is free.
 static INDEX_CACHE: OnceLock<Mutex<Option<(u64, Arc<GameIndex>)>>> = OnceLock::new();
 fn index_cache() -> &'static Mutex<Option<(u64, Arc<GameIndex>)>> {
     INDEX_CACHE.get_or_init(|| Mutex::new(None))
@@ -201,37 +201,52 @@ fn index_cache_path() -> PathBuf {
     crate::skins::paths::state_dir().join("game_wad_index.bin")
 }
 
-/// Compact binary: [fingerprint u64][count u64] then count×[hash u64][n u32].
-fn load_persisted_index(fp: u64) -> Option<Arc<GameIndex>> {
-    let data = std::fs::read(index_cache_path()).ok()?;
-    if data.len() < 16 || u64::from_le_bytes(data[0..8].try_into().ok()?) != fp {
-        return None;
+/// Wire/body format shared by the disk cache and the Cloudflare store:
+/// `[count u64]` then count×`[hash u64][n u32]`. Machine-independent — the
+/// per-machine disk file prefixes a fingerprint u64; the cloud blob does not.
+fn serialize_index_wire(idx: &GameIndex) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(8 + idx.counts.len() * 12);
+    buf.extend_from_slice(&(idx.counts.len() as u64).to_le_bytes());
+    for (&h, &c) in &idx.counts {
+        buf.extend_from_slice(&h.to_le_bytes());
+        buf.extend_from_slice(&c.to_le_bytes());
     }
-    let n = u64::from_le_bytes(data[8..16].try_into().ok()?) as usize;
-    let body = data.get(16..)?;
-    if body.len() < n.checked_mul(12)? {
+    buf
+}
+
+fn parse_index_wire(body: &[u8]) -> Option<GameIndex> {
+    let n = u64::from_le_bytes(body.get(0..8)?.try_into().ok()?) as usize;
+    let rows = body.get(8..)?;
+    if rows.len() < n.checked_mul(12)? {
         return None;
     }
     let mut counts = HashMap::with_capacity(n);
     for i in 0..n {
         let o = i * 12;
         counts.insert(
-            u64::from_le_bytes(body[o..o + 8].try_into().ok()?),
-            u32::from_le_bytes(body[o + 8..o + 12].try_into().ok()?),
+            u64::from_le_bytes(rows[o..o + 8].try_into().ok()?),
+            u32::from_le_bytes(rows[o + 8..o + 12].try_into().ok()?),
         );
     }
-    log_info!("[MOD_SCOPE] Reused cached game index ({n} entries) from disk");
-    Some(Arc::new(GameIndex { counts }))
+    Some(GameIndex { counts })
+}
+
+/// Disk cache: `[fingerprint u64]` + the wire body. The fingerprint gates reuse
+/// to the same game install/patch.
+fn load_persisted_index(fp: u64) -> Option<Arc<GameIndex>> {
+    let data = std::fs::read(index_cache_path()).ok()?;
+    if data.len() < 8 || u64::from_le_bytes(data[0..8].try_into().ok()?) != fp {
+        return None;
+    }
+    let idx = parse_index_wire(data.get(8..)?)?;
+    log_info!("[MOD_SCOPE] Reused cached game index ({} entries) from disk", idx.counts.len());
+    Some(Arc::new(idx))
 }
 
 fn persist_index(fp: u64, idx: &GameIndex) {
-    let mut buf = Vec::with_capacity(16 + idx.counts.len() * 12);
+    let mut buf = Vec::with_capacity(8);
     buf.extend_from_slice(&fp.to_le_bytes());
-    buf.extend_from_slice(&(idx.counts.len() as u64).to_le_bytes());
-    for (&h, &c) in &idx.counts {
-        buf.extend_from_slice(&h.to_le_bytes());
-        buf.extend_from_slice(&c.to_le_bytes());
-    }
+    buf.extend_from_slice(&serialize_index_wire(idx));
     let path = index_cache_path();
     if let Some(p) = path.parent() {
         let _ = std::fs::create_dir_all(p);
@@ -239,7 +254,95 @@ fn persist_index(fp: u64, idx: &GameIndex) {
     let _ = std::fs::write(path, buf);
 }
 
-/// Cached `build_game_index`: memory hit -> disk hit (same patch) -> build once.
+// ── Cloudflare-hosted per-patch index (Phase 2) ──────────────────────────────
+// The index is identical for every user on a Riot patch, so computing it locally
+// (~11s of TOC reads) once per machine per patch is wasted work N times over.
+// The operator's client (the one holding the upload token) publishes the index
+// keyed by an install-INDEPENDENT patch signature; every other client downloads
+// it and never builds locally. Fetch/publish are best-effort — any failure falls
+// straight back to the local build, so the app is never worse than Phase 1.
+const CLOUD_INDEX_BASE: &str = "https://chud-index.jivy26.workers.dev";
+
+/// Install-independent identity of the current game patch: FNV-1a over the
+/// sorted (relative WAD path, size) set. Unlike [`game_dir_fingerprint`] this
+/// strips the absolute install prefix (drive/root differ per machine) so it is
+/// the SAME string for every user on a given patch — the cloud store key.
+fn patch_signature(game_dir: &Path) -> String {
+    let root = game_dir.join("DATA").join("FINAL");
+    let mut wads = Vec::new();
+    collect_wads(&root, &mut wads);
+    let mut rel: Vec<(String, u64)> = wads
+        .iter()
+        .map(|w| {
+            let r = w.strip_prefix(game_dir).unwrap_or(w).to_string_lossy().replace('\\', "/").to_lowercase();
+            (r, std::fs::metadata(w).map(|m| m.len()).unwrap_or(0))
+        })
+        .collect();
+    rel.sort();
+    fn mix(h: &mut u64, bytes: &[u8]) {
+        for &b in bytes {
+            *h ^= b as u64;
+            *h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for (r, len) in &rel {
+        mix(&mut h, r.as_bytes());
+        mix(&mut h, &len.to_le_bytes());
+    }
+    format!("{h:016x}")
+}
+
+fn cloud_index_url(sig: &str) -> String {
+    format!("{CLOUD_INDEX_BASE}/i/{sig}")
+}
+
+/// Operator upload token, present only on the publisher's machine (never shipped
+/// in the app): env `CHUD_INDEX_UPLOAD_TOKEN` or `state/index-upload.token`.
+/// Absent -> this client only ever downloads.
+fn index_upload_token() -> Option<String> {
+    if let Ok(t) = std::env::var("CHUD_INDEX_UPLOAD_TOKEN") {
+        let t = t.trim().to_string();
+        if !t.is_empty() {
+            return Some(t);
+        }
+    }
+    let t = std::fs::read_to_string(paths::state_dir().join("index-upload.token")).ok()?.trim().to_string();
+    if t.is_empty() { None } else { Some(t) }
+}
+
+/// Try the Cloudflare store for this patch's index. `None` on 404 / any error
+/// (network down, worker down) -> caller builds locally.
+fn fetch_cloud_index(game_dir: &Path) -> Option<Arc<GameIndex>> {
+    let sig = patch_signature(game_dir);
+    let allowed = crate::net::built_in_allowed_origins();
+    let client = crate::net::build_external_client(15.0, allowed.clone());
+    let url = cloud_index_url(&sig);
+    let bytes = tauri::async_runtime::block_on(crate::net::get_bytes_checked(&client, &url, &allowed, 32 * 1024 * 1024)).ok()?;
+    let idx = parse_index_wire(&bytes)?;
+    log_info!("[MOD_SCOPE] Fetched cloud game index ({} entries) for patch {sig}", idx.counts.len());
+    Some(Arc::new(idx))
+}
+
+/// Publish a freshly-built index so other clients on this patch skip the build.
+/// No-op without the operator token. Only ever reached after a cloud fetch just
+/// 404'd (a genuine miss), and the per-patch blob is immutable, so we publish
+/// unconditionally — a redundant re-upload of identical bytes is harmless.
+fn publish_cloud_index(game_dir: &Path, idx: &GameIndex) {
+    let Some(token) = index_upload_token() else { return };
+    let sig = patch_signature(game_dir);
+    let allowed = crate::net::built_in_allowed_origins();
+    let client = crate::net::build_external_client(60.0, allowed.clone());
+    let url = cloud_index_url(&sig);
+    let body = serialize_index_wire(idx);
+    match tauri::async_runtime::block_on(crate::net::put_bytes_checked_authed(&client, &url, &allowed, body, &token)) {
+        Ok(()) => log_info!("[MOD_SCOPE] Published game index for patch {sig} to cloud"),
+        Err(e) => log_warn!("[MOD_SCOPE] Cloud index publish failed (harmless): {e}"),
+    }
+}
+
+/// Cached `build_game_index`: memory hit -> disk hit (same patch) -> cloud fetch
+/// (same patch, any machine) -> build once locally (and publish if operator).
 fn build_game_index_cached(game_dir: &Path) -> Option<Arc<GameIndex>> {
     let fp = game_dir_fingerprint(game_dir);
     if let Some((k, idx)) = index_cache().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
@@ -247,11 +350,20 @@ fn build_game_index_cached(game_dir: &Path) -> Option<Arc<GameIndex>> {
             return Some(idx.clone());
         }
     }
-    let idx = load_persisted_index(fp).or_else(|| {
-        let arc = Arc::new(build_game_index(game_dir)?);
-        persist_index(fp, &arc);
-        Some(arc)
-    })?;
+    let (idx, from_disk) = match load_persisted_index(fp) {
+        Some(idx) => (idx, true),
+        None => {
+            let idx = fetch_cloud_index(game_dir).or_else(|| {
+                let arc = Arc::new(build_game_index(game_dir)?);
+                publish_cloud_index(game_dir, &arc);
+                Some(arc)
+            })?;
+            (idx, false)
+        }
+    };
+    if !from_disk {
+        persist_index(fp, &idx);
+    }
     *index_cache().lock().unwrap_or_else(|e| e.into_inner()) = Some((fp, idx.clone()));
     Some(idx)
 }

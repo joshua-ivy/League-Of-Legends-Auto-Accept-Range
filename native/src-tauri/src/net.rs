@@ -18,6 +18,7 @@ const BUILT_IN_HOSTS: &[&str] = &[
     "chud-party-relay.jivy26.workers.dev",
     "chud-telemetry.jivy26.workers.dev",
     "chud-referral.jivy26.workers.dev",
+    "chud-index.jivy26.workers.dev",
     "github.com",
     "api.github.com",
     "raw.githubusercontent.com",
@@ -198,6 +199,21 @@ pub async fn head_exists(client: &reqwest::Client, url: &str, allowed: &HashSet<
 pub async fn put_bytes_checked(client: &reqwest::Client, url: &str, allowed: &HashSet<String>, body: Vec<u8>) -> Result<(), String> {
     let checked_url = check_external_url(url, allowed)?;
     let resp = client.put(checked_url).body(body).send().await.map_err(|e| e.to_string())?;
+    resp.error_for_status().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Like [`put_bytes_checked`] but with a `Bearer` token — for write endpoints
+/// gated by an operator secret (the game-index publisher). The token never
+/// leaves this process except as an `Authorization` header to an allowlisted host.
+pub async fn put_bytes_checked_authed(
+    client: &reqwest::Client,
+    url: &str,
+    allowed: &HashSet<String>,
+    body: Vec<u8>,
+    bearer: &str,
+) -> Result<(), String> {
+    let checked_url = check_external_url(url, allowed)?;
+    let resp = client.put(checked_url).bearer_auth(bearer).body(body).send().await.map_err(|e| e.to_string())?;
     resp.error_for_status().map(|_| ()).map_err(|e| e.to_string())
 }
 
