@@ -103,11 +103,14 @@ pub async fn trigger_injection(app: AppHandle, skins: Arc<SkinsState>, ticker_id
     };
     injection.set_game_dir(game_dir);
 
-    // Mark that we've processed the last hovered skin (first effectful line
-    // of Python's `trigger_injection`, past its `if not name: return` guard).
-    {
-        let mut shared = skins.shared.lock_safe();
-        shared.last_hover_written = true;
+    // Mark that we've processed the last hovered skin — but only once an OWN skin
+    // actually resolved (Python sets this PAST its `if not name: return` guard).
+    // If nothing resolved yet — an ARAM random roll or a bench swap that lands
+    // right at the loadout deadline — leave it UNSET so the GameStart/InProgress
+    // re-inject (`ticker::inject_for_game`, guarded by this flag) gets another
+    // shot with the skin once it resolves, instead of locking in the default.
+    if !name.is_empty() {
+        skins.shared.lock_safe().last_hover_written = true;
     }
 
     // No own skin selected. We still owe the overlay any connected party
