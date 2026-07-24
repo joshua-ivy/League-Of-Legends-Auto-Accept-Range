@@ -368,6 +368,62 @@ fn build_game_index_cached(game_dir: &Path) -> Option<Arc<GameIndex>> {
     Some(idx)
 }
 
+// ── Overlay-size floor (heavy-mod pre-check) ─────────────────────────────────
+// cslol rebuilds each base WAD a mod touches IN FULL, so a mod's overlay is at
+// least as big as the base-game WADs it targets — a champion skin ~40 MB, but
+// any Summoner's Rift map the 2.3 GB Map11 WAD. That floor alone is enough to
+// tell, before building anything, that a mod can't finish inside the game-
+// suspend window, so we can skip just that mod and still inject the rest.
+static WAD_SIZES_CACHE: OnceLock<Mutex<Option<(u64, Arc<HashMap<String, u64>>)>>> = OnceLock::new();
+fn wad_sizes_cache() -> &'static Mutex<Option<(u64, Arc<HashMap<String, u64>>)>> {
+    WAD_SIZES_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Base-game WAD basename (lowercased) -> total size, cached per patch. Metadata
+/// only (no TOC reads) so it's near-instant after the first stat pass.
+fn base_wad_sizes(game_dir: &Path) -> Arc<HashMap<String, u64>> {
+    let fp = game_dir_fingerprint(game_dir);
+    if let Some((k, m)) = wad_sizes_cache().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if *k == fp {
+            return m.clone();
+        }
+    }
+    let root = game_dir.join("DATA").join("FINAL");
+    let mut wads = Vec::new();
+    collect_wads(&root, &mut wads);
+    let mut map: HashMap<String, u64> = HashMap::with_capacity(wads.len());
+    for w in &wads {
+        if let (Some(name), Ok(meta)) = (w.file_name().and_then(|n| n.to_str()), std::fs::metadata(w)) {
+            *map.entry(name.to_lowercase()).or_insert(0) += meta.len();
+        }
+    }
+    let arc = Arc::new(map);
+    *wad_sizes_cache().lock().unwrap_or_else(|e| e.into_inner()) = Some((fp, arc.clone()));
+    arc
+}
+
+/// Lower bound on the overlay a mod would build: the total size of the base-game
+/// WADs it targets, matched by its `WAD/<name>.wad.client` member names. Reads
+/// only the mod zip's central directory — no extraction. `0` if the file can't
+/// be read or targets nothing recognizable (treat as "not heavy").
+pub fn overlay_size_floor(mod_path: &Path, game_dir: &Path) -> u64 {
+    let Ok(file) = std::fs::File::open(mod_path) else { return 0 };
+    let Ok(zip) = zip::ZipArchive::new(std::io::BufReader::new(file)) else { return 0 };
+    let sizes = base_wad_sizes(game_dir);
+    let mut total = 0u64;
+    for name in zip.file_names() {
+        let lower = name.to_lowercase();
+        if !lower.ends_with(".wad.client") {
+            continue;
+        }
+        let base = lower.rsplit('/').next().unwrap_or(&lower);
+        if let Some(sz) = sizes.get(base) {
+            total += *sz;
+        }
+    }
+    total
+}
+
 /// Best-effort background pre-warm at startup so the ~11s first build never
 /// lands inside an injection's suspend window. No-op if the game dir isn't
 /// resolvable yet (League closed) — the champ-select sweep builds it then.
@@ -375,6 +431,7 @@ pub fn prewarm_game_index() {
     std::thread::spawn(|| {
         if let Some(dir) = crate::skins::lcu_ext::resolve_game_dir() {
             let _ = build_game_index_cached(&dir);
+            let _ = base_wad_sizes(&dir);
         }
     });
 }

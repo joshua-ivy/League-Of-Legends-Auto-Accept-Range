@@ -703,6 +703,18 @@ async fn run_custom_mod_injection(
     let mut labels = Vec::new();
     let mut has_custom_skin_folder = !custom_mod.relative_path.is_empty() && !custom_mod.mod_path.is_empty();
 
+    // HEAVY-MOD GUARD: cslol rebuilds each base WAD a mod touches in full, so a
+    // mod targeting a huge base WAD (any SR map -> the 2.3 GB Map11) can't finish
+    // inside the game-suspend window and would abort the WHOLE build (code 128),
+    // taking every other skin/mod down with it. Detect it up front from the base
+    // WADs it targets and skip just that mod — the rest inject normally, no delay.
+    let heavy_game_dir = lcu_ext::resolve_game_dir();
+    let is_too_heavy = |mod_path: &str| -> Option<u64> {
+        let gd = heavy_game_dir.as_ref()?;
+        let floor = crate::skins::mod_scope::overlay_size_floor(Path::new(mod_path), gd);
+        (floor >= HEAVY_OVERLAY_FLOOR_BYTES).then_some(floor)
+    };
+
     // SAFETY GUARD: refuse to inject a mod that overrides the champion's ROOT
     // character/ability record — it swaps the game's live ability data for the
     // mod's (usually stale) copy and breaks the champion in-game: missing/
@@ -716,6 +728,13 @@ async fn run_custom_mod_injection(
             log_warn!("[SAFETY] Blocked custom mod '{}' — overrides {bad_path} (champion ability data)", custom_mod.mod_name);
             broken_mods::flag(&custom_mod.relative_path, &custom_mod.mod_name, custom_mod.champion_id, &bad_path);
             notify_skin_blocked(app, &custom_mod.mod_name, &champion_name);
+            has_custom_skin_folder = false;
+        }
+    }
+    if has_custom_skin_folder {
+        if let Some(floor) = is_too_heavy(&custom_mod.mod_path) {
+            log_warn!("[INJECT] Skipping custom mod '{}' — too heavy (~{:.1} GB base WADs); would force a full-game rebuild", custom_mod.mod_name, floor as f64 / 1.073_741_824e9);
+            notify_mod_too_heavy(app, &custom_mod.mod_name, floor);
             has_custom_skin_folder = false;
         }
     }
@@ -738,6 +757,11 @@ async fn run_custom_mod_injection(
 
     for (label_prefix, sel) in [("Map", &category_mods.map), ("Font", &category_mods.font), ("Announcer", &category_mods.announcer)] {
         if let Some(m) = sel {
+            if let Some(floor) = is_too_heavy(&m.mod_path) {
+                log_warn!("[INJECT] Skipping {} mod '{}' — too heavy (~{:.1} GB base WADs); would force a full-game rebuild", label_prefix.to_lowercase(), m.mod_name, floor as f64 / 1.073_741_824e9);
+                notify_mod_too_heavy(app, &m.mod_name, floor);
+                continue;
+            }
             if let Some(folder) = extract_mod(&m.mod_path, &mods_dir, &cache_dir) {
                 log_info!("[INJECT] Including {} mod: {}", label_prefix.to_lowercase(), m.mod_name);
                 extra_names.push(folder);
@@ -746,6 +770,11 @@ async fn run_custom_mod_injection(
         }
     }
     for m in &category_mods.others {
+        if let Some(floor) = is_too_heavy(&m.mod_path) {
+            log_warn!("[INJECT] Skipping other mod '{}' — too heavy (~{:.1} GB base WADs); would force a full-game rebuild", m.mod_name, floor as f64 / 1.073_741_824e9);
+            notify_mod_too_heavy(app, &m.mod_name, floor);
+            continue;
+        }
         if let Some(folder) = extract_mod(&m.mod_path, &mods_dir, &cache_dir) {
             log_info!("[INJECT] Including other mod: {}", m.mod_name);
             extra_names.push(folder);
@@ -988,6 +1017,31 @@ fn notify_skin_blocked(app: &AppHandle, mod_name: &str, champion: &str) {
     let _ = app.emit(
         "skin-blocked",
         serde_json::json!({ "mod": name, "champion": champ, "message": message }),
+    );
+}
+
+/// A mod (almost always a custom map) targets base WADs totalling at least this
+/// much — its overlay can't be built inside the game-suspend window, so it's
+/// skipped up front rather than aborting the whole build. 2 GiB catches every
+/// Summoner's Rift map (base Map11 alone is ~2.3 GiB) while leaving smaller
+/// map-mode reskins to try normally.
+const HEAVY_OVERLAY_FLOOR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// A mod was skipped for being too heavy to inject (would force a full-game
+/// rebuild). Tell the user in both the toast and the in-game overlay banner so a
+/// missing map reads as "that map's too big", not a silent failure — and make
+/// clear their other skins still loaded.
+fn notify_mod_too_heavy(app: &AppHandle, mod_name: &str, floor_bytes: u64) {
+    let name = if mod_name.trim().is_empty() { "That mod" } else { mod_name };
+    let gb = floor_bytes as f64 / 1.073_741_824e9;
+    let message = format!("{name} is too large to apply (it would rebuild ~{gb:.1} GB of game files) and was skipped — your other skins still loaded.");
+    let _ = app.emit(
+        "notification",
+        serde_json::json!({ "title": "Mod too large — skipped", "message": message.clone(), "tone": "warning" }),
+    );
+    let _ = app.emit(
+        "skin-blocked",
+        serde_json::json!({ "mod": name, "message": message }),
     );
 }
 
