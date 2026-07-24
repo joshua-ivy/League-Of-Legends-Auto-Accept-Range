@@ -314,6 +314,20 @@ fn is_chroma_id(skin_id: i64, cache: Option<&ChampionSkinCache>) -> bool {
     special::is_special_id(skin_id) || cache.is_some_and(|c| c.is_chroma(skin_id))
 }
 
+/// Map a concrete skin/chroma id to its injection token (`skin_<id>` vs
+/// `chroma_<id>`) and chroma arg, using the champion-skin cache to tell a real
+/// chroma from a plain non-base skin. This is the same rule `resolve_injection_name`
+/// applies for the normal path; Swiftplay reuses it so a Swiftplay pick names
+/// skins identically (the old `special::is_base` heuristic wrongly named every
+/// non-base skin `chroma_`, so unowned skins failed to resolve).
+pub fn skin_injection_name(skin_id: i64, cache: Option<&ChampionSkinCache>) -> (String, Option<i64>) {
+    if is_chroma_id(skin_id, cache) {
+        (format!("chroma_{skin_id}"), Some(skin_id))
+    } else {
+        (format!("skin_{skin_id}"), None)
+    }
+}
+
 /// Historic > random > hovered priority, `"skin_{id}"`/`"chroma_{id}"` token
 /// format. For a custom-mod historic selection: extract the base skin ID
 /// from the mod's `"skins/{skin_id}/..."` relative path (falling back to the
@@ -487,6 +501,20 @@ mod tests {
         shared.historic_mode_active = true;
         shared.historic_selection = Some(HistoricSelection::SkinId(103000));
         assert_eq!(resolve_injection_name(&shared, Some(&cache)), Some("skin_103000".to_string()));
+    }
+
+    #[test]
+    fn skin_injection_name_distinguishes_non_base_skins_from_chromas() {
+        // Cache marks 103001 as a chroma; 103005 is a plain (non-base) skin.
+        let cache = cache_with_chroma(103, 103000, 103001);
+        // Base skin -> skin_.
+        assert_eq!(skin_injection_name(103000, Some(&cache)), ("skin_103000".into(), None));
+        // Non-base OWNED-or-unowned SKIN -> skin_ (the Swiftplay regression: the
+        // old `is_base` heuristic wrongly produced `chroma_103005`, which fails
+        // to resolve since no such chroma exists).
+        assert_eq!(skin_injection_name(103005, Some(&cache)), ("skin_103005".into(), None));
+        // Real chroma -> chroma_ with the chroma id passed through.
+        assert_eq!(skin_injection_name(103001, Some(&cache)), ("chroma_103001".into(), Some(103001)));
     }
 
     #[test]

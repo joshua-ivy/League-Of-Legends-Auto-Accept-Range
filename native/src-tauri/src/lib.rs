@@ -1255,6 +1255,14 @@ async fn skins_pick_skin(
         shared.last_hovered_skin_slug = Some(format!("skin_{skin_id}"));
         shared.last_hovered_skin_key = skin_name.or_else(|| Some(format!("skin_{skin_id}")));
         shared.selected_chroma_id = chroma_id;
+        // Swiftplay has no champ-select countdown to inject at — its pipeline
+        // pre-extracts from `swiftplay_skin_tracking` at Matchmaking. Normal mode
+        // reads `last_hovered_skin_id`, which that path never sees, so feed the
+        // pick into the tracking map or a Swiftplay pick silently never injects.
+        if shared.is_swiftplay_mode {
+            let target = chroma_id.unwrap_or(skin_id);
+            shared.swiftplay_skin_tracking.insert(skins::features::special::champion_of(skin_id), target);
+        }
         // A manual pick overrides historic mode this game — historic has top
         // priority in `resolve_injection_name`, so without this the manual choice
         // would be silently ignored while the toggle stays on for next game.

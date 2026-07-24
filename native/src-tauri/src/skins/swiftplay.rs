@@ -23,7 +23,6 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::lcu;
-use crate::skins::features::special;
 use crate::skins::injection::{storage, zips};
 use crate::skins::lcu_ext;
 use crate::skins::paths;
@@ -115,6 +114,10 @@ fn apply_champion_selection(skins: &Arc<SkinsState>, sel: lcu_ext::ChampionSelec
     shared.own_champion_locked = true;
     if sel.skin_id > 0 {
         shared.selected_skin_id = Some(sel.skin_id);
+        // Seed tracking from the lobby loadout so a skin already chosen in the
+        // client injects even without a fresh Chud pick; a later `skins_pick_skin`
+        // just overwrites this champion's entry.
+        shared.swiftplay_skin_tracking.insert(sel.champion_id, sel.skin_id);
     }
 }
 
@@ -224,21 +227,44 @@ async fn extract_tracked_skins(skins: &Arc<SkinsState>) {
         return;
     }
 
+    // Resolve each tracked id to its injection token using the champion-skin
+    // cache — a plain non-base skin must name as `skin_<id>`, only a real chroma
+    // as `chroma_<id>` (`ticker::skin_injection_name`, the normal-path rule). The
+    // old `is_base` heuristic named EVERY non-base id `chroma_`, so an unowned
+    // skin resolved to a nonexistent chroma path and silently failed.
+    let auth = lcu::cached_auth();
+    let client = auth.as_ref().map(|_| lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S));
+    let mut specs: Vec<(i64, String, Option<i64>)> = Vec::new();
+    for (champion_id, skin_id) in &filtered {
+        let cache = match (&auth, &client) {
+            (Some(a), Some(c)) => lcu_ext::scrape_champion_skins(c, a, *champion_id).await,
+            _ => None,
+        };
+        let (injection_name, chroma_id) = crate::skins::ticker::skin_injection_name(*skin_id, cache.as_ref());
+        specs.push((*champion_id, injection_name, chroma_id));
+    }
+
+    // Force the lobby loadout to the BASE skin for any UNOWNED tracked skin, so
+    // the game loads base and our overlay (built to override base) actually
+    // renders — Swiftplay's equivalent of the normal path's champ-select LCU
+    // force. Owned skins are left alone (the client can select them directly).
+    if let (Some(a), Some(c)) = (&auth, &client) {
+        let owned = skins.shared.lock_safe().owned_skin_ids.clone();
+        let forced = lcu_ext::force_base_skin_slots(c, a, &filtered, &owned).await;
+        log_info!("[swiftplay] Base-skin slot force for unowned tracked skins: ok={forced}");
+    }
+
     // Blocking fs/zip work (dir cleanup + per-champion zip resolution/extraction)
     // runs off the phase actor task via spawn_blocking - this used to run
     // inline here, stalling every gameflow transition while extraction ran.
-    let blocking_filtered = filtered.clone();
     let extracted = tauri::async_runtime::spawn_blocking(move || {
         let mods_dir = paths::injection_mods_dir();
         storage::clean_mods_dir(&mods_dir);
         storage::clean_overlay_dir(&paths::injection_overlay_dir());
 
         let mut extracted = Vec::new();
-        for (champion_id, skin_id) in &blocking_filtered {
-            let is_base = special::is_base(*skin_id);
-            let (injection_name, chroma_id) = if is_base { (format!("skin_{skin_id}"), None) } else { (format!("chroma_{skin_id}"), Some(*skin_id)) };
-
-            let Some(zip_path) = zips::resolve_zip(&paths::skins_dir(), &injection_name, chroma_id, Some(&injection_name), None, Some(*champion_id)) else {
+        for (champion_id, injection_name, chroma_id) in &specs {
+            let Some(zip_path) = zips::resolve_zip(&paths::skins_dir(), injection_name, *chroma_id, Some(injection_name), None, Some(*champion_id)) else {
                 log_warn!("[swiftplay] Skin ZIP not found: {injection_name}");
                 continue;
             };
@@ -247,7 +273,7 @@ async fn extract_tracked_skins(skins: &Arc<SkinsState>) {
                     log_info!("[swiftplay] Extracted {injection_name} to mods directory");
                     extracted.push(folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
                 }
-                Err(e) => log_warn!("[swiftplay] Error extracting skin {skin_id}: {e}"),
+                Err(e) => log_warn!("[swiftplay] Error extracting {injection_name}: {e}"),
             }
         }
         extracted
@@ -332,7 +358,16 @@ async fn run_overlay_if_ready(app: AppHandle, skins: Arc<SkinsState>) {
         log_warn!("[swiftplay] No tracking data for extracted mods - cannot pick a primary skin");
         return;
     };
-    let primary = if special::is_base(skin_id) { format!("skin_{skin_id}") } else { format!("chroma_{skin_id}") };
+    // Same cache-based naming as extraction — the `skin_`/`chroma_` prefix is how
+    // `inject_skin_immediately` re-resolves the primary ZIP, so it must match.
+    let primary_cache = match lcu::cached_auth() {
+        Some(auth) => {
+            let client = lcu::build_lcu_client(lcu_ext::LCU_API_TIMEOUT_S);
+            lcu_ext::scrape_champion_skins(&client, &auth, champion_id).await
+        }
+        None => None,
+    };
+    let (primary, _) = crate::skins::ticker::skin_injection_name(skin_id, primary_cache.as_ref());
     let skin_id_str = skin_id.to_string();
     let extras: Vec<String> = extracted_folders.iter().filter(|f| f.as_str() != skin_id_str).cloned().collect();
 
