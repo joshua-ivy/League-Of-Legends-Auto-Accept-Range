@@ -57,6 +57,14 @@ const OVERLAY_SIZE_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// seconds) rather than grinding the disk until the auto-resume safety fires
 /// ~a minute later. A legitimate heavy multi-mod overlay stays well under 2 GiB.
 const OVERLAY_SIZE_ABORT_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+/// When the user raises the auto-resume timeout above the default (opting into
+/// heavy/slow builds — e.g. a full custom map), don't fast-abort at 3 GiB; let
+/// the build grow and let the auto-resume timeout be the gate. This is only a
+/// disk-safety ceiling then — well above the ~10 GiB a heavy map needs, below a
+/// true runaway that would fill the drive.
+const OVERLAY_SIZE_ABORT_BYTES_HEAVY: u64 = 20 * 1024 * 1024 * 1024;
+/// Above this auto-resume timeout the user has opted into heavy builds (see above).
+const HEAVY_BUILD_MIN_TIMEOUT_SECS: f64 = 45.0;
 /// Never inject the hook into a game loading UNSUSPENDED longer than this:
 /// switching cslol's file-open redirects mid-load, after the game already
 /// opened half its WADs, crashes it (observed: anticheat blocked the freeze,
@@ -203,6 +211,14 @@ pub fn mk_run_overlay(
     let stderr_thread = std::thread::spawn(move || drain_pipe(stderr_pipe));
 
     let deadline = mkoverlay_start + MKOVERLAY_TIMEOUT;
+    // A raised auto-resume timeout means the user opted into heavy/slow builds
+    // (a full map) — then only abort on a disk-safety ceiling, not the 3 GiB
+    // fast-fail, and let the auto-resume window itself gate "too slow".
+    let abort_ceiling = if game_monitor.auto_resume_secs() > HEAVY_BUILD_MIN_TIMEOUT_SECS {
+        OVERLAY_SIZE_ABORT_BYTES_HEAVY
+    } else {
+        OVERLAY_SIZE_ABORT_BYTES
+    };
     let mut polls = 0u32;
     let mut size_warned = false;
     let wait_result = loop {
@@ -218,7 +234,7 @@ pub fn mk_run_overlay(
                 polls += 1;
                 if polls % SIZE_CHECK_EVERY == 0 {
                     let sz = dir_size(overlay_dir);
-                    if sz > OVERLAY_SIZE_ABORT_BYTES {
+                    if sz > abort_ceiling {
                         break BuildWait::Runaway;
                     }
                     if !size_warned && sz > OVERLAY_SIZE_WARN_BYTES {

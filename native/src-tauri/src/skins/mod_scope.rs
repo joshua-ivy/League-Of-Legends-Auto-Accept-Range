@@ -532,15 +532,25 @@ fn run_tool(exe: &Path, args: &[&std::ffi::OsStr]) -> Result<(), String> {
     Ok(())
 }
 
-/// Walk `dir`, deleting entries that fail the scoping rule.
+/// A WAD member that IS itself a huge base WAD (a map — `Map11.wad.client` etc.).
+/// Such a mod legitimately targets multi-GB WADs, so the size-drop must NOT apply
+/// to it or every entry would be dropped and the map gutted to nothing.
+fn is_large_target_wad(member: &str) -> bool {
+    let low = member.to_lowercase();
+    low.strip_prefix("map").is_some_and(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        && low.ends_with(".wad.client")
+}
+
+/// Walk `dir`, deleting entries that fail the scoping rule. `exempt_size_drop`
+/// skips the size test for large-target members (maps) — see [`is_large_target_wad`].
 /// Returns (kept, dropped-descriptions).
-fn scope_dir(dir: &Path, index: &GameIndex) -> (u32, Vec<String>) {
-    fn walk(dir: &Path, root: &Path, index: &GameIndex, kept: &mut u32, dropped: &mut Vec<String>) {
+fn scope_dir(dir: &Path, index: &GameIndex, exempt_size_drop: bool) -> (u32, Vec<String>) {
+    fn walk(dir: &Path, root: &Path, index: &GameIndex, exempt: bool, kept: &mut u32, dropped: &mut Vec<String>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                walk(&path, root, index, kept, dropped);
+                walk(&path, root, index, exempt, kept, dropped);
                 continue;
             }
             let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
@@ -555,7 +565,10 @@ fn scope_dir(dir: &Path, index: &GameIndex) -> (u32, Vec<String>) {
             // count-blind case: an asset in just 5 WADs that happen to include
             // Map11/Map12/Global (multi-GB each) forces a 5 GB rebuild while
             // passing the count rule. Own-champion content lives in ~1 small WAD.
-            if n <= MAX_ENTRY_WADS && size_sum <= ENTRY_SIZE_DROP_BYTES {
+            // A map member is exempt from the size test — its whole point is to
+            // target the 2.3 GB Map11 WAD, so size-dropping would gut it.
+            let over_size = !exempt && size_sum > ENTRY_SIZE_DROP_BYTES;
+            if n <= MAX_ENTRY_WADS && !over_size {
                 *kept += 1;
             } else {
                 dropped.push(format!("{rel} ({n} wads, {} MB)", size_sum / (1024 * 1024)));
@@ -565,7 +578,7 @@ fn scope_dir(dir: &Path, index: &GameIndex) -> (u32, Vec<String>) {
     }
     let mut kept = 0;
     let mut dropped = Vec::new();
-    walk(dir, dir, index, &mut kept, &mut dropped);
+    walk(dir, dir, index, exempt_size_drop, &mut kept, &mut dropped);
     (kept, dropped)
 }
 
@@ -616,7 +629,7 @@ fn scope_fantome(path: &Path, index: &GameIndex) -> Result<usize, String> {
             member_path.clone()
         };
 
-        let (kept, dropped) = scope_dir(&filter_dir, index);
+        let (kept, dropped) = scope_dir(&filter_dir, index, is_large_target_wad(&member));
         log_info!("[MOD_SCOPE] {member}: kept {kept}, dropped {}", dropped.len());
         let member_dropped = dropped.len();
         total_dropped.extend(dropped);
@@ -921,7 +934,7 @@ mod tests {
         counts.insert(path_hash("assets/shared/particles/defaultfalloff.tex"), 226u32);
         let idx = GameIndex { counts, sizes: HashMap::new() };
 
-        let (kept, dropped) = scope_dir(&root, &idx);
+        let (kept, dropped) = scope_dir(&root, &idx, false);
         assert_eq!(kept, 3, "own + cross-champion + brand-new entries all survive");
         assert_eq!(dropped.len(), 1);
         assert!(dropped[0].contains("defaultfalloff.tex"));
@@ -929,6 +942,16 @@ mod tests {
         assert!(!root.join("assets/shared/particles/defaultfalloff.tex").exists());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn is_large_target_wad_detects_map_wads_only() {
+        assert!(is_large_target_wad("Map11.wad.client"));
+        assert!(is_large_target_wad("map12.wad.client"));
+        assert!(is_large_target_wad("Map11.en_US.wad.client"));
+        assert!(!is_large_target_wad("Talon.wad.client"));
+        assert!(!is_large_target_wad("Global.wad.client"));
+        assert!(!is_large_target_wad("Maps.wad.client")); // "map" not followed by a digit
     }
 
     #[test]
@@ -952,7 +975,7 @@ mod tests {
         sizes.insert(shared, 5 * 1024 * 1024 * 1024u64); // ~5 GB (Map11+Map12+Global+...)
         let idx = GameIndex { counts, sizes };
 
-        let (kept, dropped) = scope_dir(&root, &idx);
+        let (kept, dropped) = scope_dir(&root, &idx, false);
         assert_eq!(kept, 1, "own content survives");
         assert_eq!(dropped.len(), 1, "the count-5-but-5GB shared entry is dropped");
         assert!(dropped[0].contains("moon_particle"));

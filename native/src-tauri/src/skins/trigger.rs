@@ -42,6 +42,10 @@ use crate::{AppState, LockExt};
 const BASE_SKIN_VERIFICATION_WAIT: Duration = Duration::from_millis(150);
 /// `config.LOG_SEPARATOR_WIDTH`.
 const LOG_SEPARATOR_WIDTH: usize = 80;
+/// Above this configured auto-resume timeout the user has opted into heavy/slow
+/// overlay builds (e.g. a full custom map), so the too-heavy pre-skip is bypassed.
+/// Mirrors `injection::overlay`'s ceiling gate.
+const HEAVY_BUILD_MIN_TIMEOUT_SECS: f64 = 45.0;
 
 /// Entry point called by `ticker.rs` at the loadout deadline (ported from
 /// `InjectionTrigger.trigger_injection`). `name` is the already-resolved
@@ -708,8 +712,17 @@ async fn run_custom_mod_injection(
     // inside the game-suspend window and would abort the WHOLE build (code 128),
     // taking every other skin/mod down with it. Detect it up front from the base
     // WADs it targets and skip just that mod — the rest inject normally, no delay.
+    // The skip protects DEFAULT users from a mod that can't finish inside the
+    // game-suspend window. A user who raises the auto-resume timeout above the
+    // default is explicitly opting into long/heavy builds (a full custom map),
+    // so honor that and don't pre-skip — the overlay build's own ceiling scales
+    // with the same timeout.
+    let allow_heavy = app.state::<Arc<AppState>>().config.lock_safe().skins.monitor_auto_resume_timeout_secs > HEAVY_BUILD_MIN_TIMEOUT_SECS;
     let heavy_game_dir = lcu_ext::resolve_game_dir();
     let is_too_heavy = |mod_path: &str| -> Option<String> {
+        if allow_heavy {
+            return None;
+        }
         let gd = heavy_game_dir.as_ref()?;
         crate::skins::mod_scope::heavy_skip_reason(Path::new(mod_path), gd)
     };

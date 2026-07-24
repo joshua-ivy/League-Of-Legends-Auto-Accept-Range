@@ -183,6 +183,13 @@ impl GameMonitor {
         self.state.lock_safe().auto_resume = Duration::from_secs_f64(clamped);
     }
 
+    /// The configured auto-resume window in seconds — the overlay build reads it
+    /// to decide how big a build to tolerate (a raised timeout = the user opted
+    /// into heavy/slow builds, so don't fast-abort them).
+    pub fn auto_resume_secs(&self) -> f64 {
+        self.state.lock_safe().auto_resume.as_secs_f64()
+    }
+
     /// Wire the safety policy hook (P0-A) so the watcher gates every
     /// suspend. Survives `start()`/`stop()` cycles.
     pub fn set_policy_hook(&mut self, hook: PolicyHook) {
