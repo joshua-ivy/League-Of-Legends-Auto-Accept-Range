@@ -598,13 +598,17 @@ pub fn sweep_imported_mods(app: Option<&AppHandle>) {
 
 fn sweep_inner(app: Option<&AppHandle>) {
     let mods_root = paths::mods_dir();
-    let mut skins = Vec::new();
-    collect_mod_archives(&mods_root.join("skins"), &mut skins);
+    let mut scoped = Vec::new();
+    collect_mod_archives(&mods_root.join("skins"), &mut scoped);
+    // Custom maps are packed WAD mods too, and a map that carries globally-shared
+    // assets forces the same full-game overlay rebuild a skin would — scope them
+    // identically (drop entries present in many game WADs) so they inject fast.
+    collect_mod_archives(&mods_root.join("maps"), &mut scoped);
     let mut announcers = Vec::new();
     collect_mod_archives(&mods_root.join("announcers"), &mut announcers);
 
     let mut state = load_state();
-    let pending: Vec<(PathBuf, bool)> = skins
+    let pending: Vec<(PathBuf, bool)> = scoped
         .into_iter()
         .map(|p| (p, false))
         .chain(announcers.into_iter().map(|p| (p, true)))
@@ -622,7 +626,7 @@ fn sweep_inner(app: Option<&AppHandle>) {
     }
     log_info!("[MOD_SCOPE] {} new/changed imported mod(s) to check", pending.len());
 
-    // Champion skins need the game index; announcers don't.
+    // Skins and maps need the game index; announcers don't.
     let needs_index = pending.iter().any(|(_, is_announcer)| !is_announcer);
     let index = if needs_index {
         match lcu_ext::resolve_game_dir() {

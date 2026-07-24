@@ -52,6 +52,11 @@ const SIZE_CHECK_EVERY: u32 = 40; // ~every 2s
 /// touches nearly every WAD and is rebuilding a full game copy (observed:
 /// 17 GB / 156 WADs for a 4-mod set that legitimately touched 4).
 const OVERLAY_SIZE_WARN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Past this the build is a confirmed runaway full-game rebuild — it will take
+/// minutes and can never hook before the game loads, so abort it early (in
+/// seconds) rather than grinding the disk until the auto-resume safety fires
+/// ~a minute later. A legitimate heavy multi-mod overlay stays well under 2 GiB.
+const OVERLAY_SIZE_ABORT_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 /// Never inject the hook into a game loading UNSUSPENDED longer than this:
 /// switching cslol's file-open redirects mid-load, after the game already
 /// opened half its WADs, crashes it (observed: anticheat blocked the freeze,
@@ -75,6 +80,7 @@ pub fn code_reason(code: i32) -> Option<&'static str> {
         124 => Some("the overlay build timed out"),
         125 => Some("the game started before the overlay finished building"),
         126 => Some("the game loaded too fast to hook safely — try again"),
+        128 => Some("a mod is too heavy and forced a full-game rebuild — remove or repackage it (often a large custom map)"),
         127 => Some("the mod-tools helper is missing (check the Skins setup)"),
         129 => Some("the injection helper (cslol-dll.dll) is missing or damaged — see the Skins setup"),
         130 => Some("there isn't enough free disk space to build the overlay"),
@@ -93,6 +99,9 @@ enum BuildWait {
     /// "corrupted League" incident: 60s frozen -> forced resume -> another
     /// 60s of full-throttle WAD writes -> wedged Riot session.
     GameAutoResumed,
+    /// The overlay blew past `OVERLAY_SIZE_ABORT_BYTES` — a confirmed runaway
+    /// full-game rebuild. Kill it early instead of waiting for the auto-resume.
+    Runaway,
 }
 
 /// Create the overlay (`mkoverlay`) and run it (`runoverlay`), resuming the
@@ -207,13 +216,19 @@ pub fn mk_run_overlay(
                     break BuildWait::TimedOut;
                 }
                 polls += 1;
-                if !size_warned && polls % SIZE_CHECK_EVERY == 0 && dir_size(overlay_dir) > OVERLAY_SIZE_WARN_BYTES {
-                    size_warned = true;
-                    log_warn!(
-                        "[INJECT] Overlay build exceeded {} GiB and is still growing - a mod in this set ({}) is forcing a near-full-game WAD rebuild (usually a RAW/loose-file custom mod with shared asset paths). Repackage it as a proper WAD mod.",
-                        OVERLAY_SIZE_WARN_BYTES / (1024 * 1024 * 1024),
-                        mod_names.join(", ")
-                    );
+                if polls % SIZE_CHECK_EVERY == 0 {
+                    let sz = dir_size(overlay_dir);
+                    if sz > OVERLAY_SIZE_ABORT_BYTES {
+                        break BuildWait::Runaway;
+                    }
+                    if !size_warned && sz > OVERLAY_SIZE_WARN_BYTES {
+                        size_warned = true;
+                        log_warn!(
+                            "[INJECT] Overlay build exceeded {} GiB and is still growing - a mod in this set ({}) is forcing a near-full-game WAD rebuild (usually a RAW/loose-file custom mod with shared asset paths). Repackage it as a proper WAD mod.",
+                            OVERLAY_SIZE_WARN_BYTES / (1024 * 1024 * 1024),
+                            mod_names.join(", ")
+                        );
+                    }
                 }
                 std::thread::sleep(MKOVERLAY_POLL);
             }
@@ -241,6 +256,20 @@ pub fn mk_run_overlay(
             );
             cleanup_failed_build(mods_dir, overlay_dir);
             return Ok(125);
+        }
+        BuildWait::Runaway => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_thread.join();
+            let _ = stderr_thread.join();
+            log_error!(
+                "[INJECT] Aborted overlay build early ({:.1}s in) - it passed {} GiB and was still growing, so one mod ({}) is forcing a near-full-game rebuild that can't finish before the game loads. Remove or repackage the heavy mod (usually a large custom map). Skins skipped this game.",
+                mkoverlay_start.elapsed().as_secs_f64(),
+                OVERLAY_SIZE_ABORT_BYTES / (1024 * 1024 * 1024),
+                mod_names.join(", ")
+            );
+            cleanup_failed_build(mods_dir, overlay_dir);
+            return Ok(128);
         }
         BuildWait::TimedOut => {
             let _ = child.kill();
