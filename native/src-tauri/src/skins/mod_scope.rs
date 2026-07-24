@@ -45,10 +45,16 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// (own WAD, locale sibling, event twins, other champs in a multi-champ
 /// pack) — presumed intentional. Beyond it, shared junk (34-227 WADs observed).
 const MAX_ENTRY_WADS: u32 = 5;
+/// Also drop an entry (regardless of WAD count) when the game WADs it lives in
+/// total more than this — a shared asset that reaches into Map11/Map12/Global
+/// (multi-GB each) forces a full-game overlay rebuild even at count 5. Own
+/// champion content sits in ~1 small WAD (~40 MB), the biggest UI WAD is ~400 MB,
+/// so 700 MB keeps legit content while catching the multi-GB pull-ins.
+const ENTRY_SIZE_DROP_BYTES: u64 = 700 * 1024 * 1024;
 /// Bump to force every mod through the scoper again after a rule change.
-/// v2: count-only rule — v1's WAD-family membership requirement wrongly
-/// stripped cross-champion content from multi-champion packs.
-const SCOPE_RULE_VERSION: u32 = 2;
+/// v3: added the size-aware drop — v2's count-only rule kept count-5 entries
+/// that dragged in the 2.3 GB Map11 WAD, ballooning the overlay to 5 GB+.
+const SCOPE_RULE_VERSION: u32 = 3;
 
 /// One sweep at a time — startup and ChampSelect entry can race.
 static SWEEP_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -101,6 +107,11 @@ fn stamp(path: &Path) -> Option<String> {
 struct GameIndex {
     /// path-hash -> number of game WADs containing it.
     counts: HashMap<u64, u32>,
+    /// path-hash -> total byte size of the game WADs containing it. An entry in
+    /// few WADs can still force a multi-GB overlay if those WADs are huge (a
+    /// shared asset that lives in Map11's 2.3 GB WAD), so the scoper drops on
+    /// this too — count alone is size-blind.
+    sizes: HashMap<u64, u64>,
 }
 
 /// Parse a WAD v3 table of contents into its entry path-hash set.
@@ -145,21 +156,29 @@ fn build_game_index(game_dir: &Path) -> Option<GameIndex> {
         return None;
     }
     let mut counts: HashMap<u64, u32> = HashMap::new();
+    let mut sizes: HashMap<u64, u64> = HashMap::new();
     let mut indexed = 0u32;
     for w in &wads {
         let Some(hashes) = wad_toc(w) else { continue };
+        let wad_size = std::fs::metadata(w).map(|m| m.len()).unwrap_or(0);
         for &h in &hashes {
             *counts.entry(h).or_insert(0) += 1;
+            *sizes.entry(h).or_insert(0) += wad_size;
         }
         indexed += 1;
     }
     log_info!("[MOD_SCOPE] Indexed {indexed} game WADs ({} distinct entries)", counts.len());
-    Some(GameIndex { counts })
+    Some(GameIndex { counts, sizes })
 }
 
 impl GameIndex {
     fn count(&self, h: u64) -> u32 {
         self.counts.get(&h).copied().unwrap_or(0)
+    }
+    /// Total size of the game WADs containing `h` — how much overlay this one
+    /// entry would force cslol to rebuild.
+    fn size_sum(&self, h: u64) -> u64 {
+        self.sizes.get(&h).copied().unwrap_or(0)
     }
 }
 
@@ -198,18 +217,22 @@ fn game_dir_fingerprint(game_dir: &Path) -> u64 {
 }
 
 fn index_cache_path() -> PathBuf {
-    crate::skins::paths::state_dir().join("game_wad_index.bin")
+    // v2 = the size-carrying format; the old `game_wad_index.bin` (count-only)
+    // is a different layout, so a distinct name avoids misparsing a stale file.
+    crate::skins::paths::state_dir().join("game_wad_index_v2.bin")
 }
 
 /// Wire/body format shared by the disk cache and the Cloudflare store:
-/// `[count u64]` then count×`[hash u64][n u32]`. Machine-independent — the
-/// per-machine disk file prefixes a fingerprint u64; the cloud blob does not.
+/// `[count u64]` then count×`[hash u64][n u32][size u64]` (20 bytes/entry).
+/// Machine-independent — the per-machine disk file prefixes a fingerprint u64;
+/// the cloud blob does not.
 fn serialize_index_wire(idx: &GameIndex) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(8 + idx.counts.len() * 12);
+    let mut buf = Vec::with_capacity(8 + idx.counts.len() * 20);
     buf.extend_from_slice(&(idx.counts.len() as u64).to_le_bytes());
     for (&h, &c) in &idx.counts {
         buf.extend_from_slice(&h.to_le_bytes());
         buf.extend_from_slice(&c.to_le_bytes());
+        buf.extend_from_slice(&idx.sizes.get(&h).copied().unwrap_or(0).to_le_bytes());
     }
     buf
 }
@@ -217,18 +240,18 @@ fn serialize_index_wire(idx: &GameIndex) -> Vec<u8> {
 fn parse_index_wire(body: &[u8]) -> Option<GameIndex> {
     let n = u64::from_le_bytes(body.get(0..8)?.try_into().ok()?) as usize;
     let rows = body.get(8..)?;
-    if rows.len() < n.checked_mul(12)? {
+    if rows.len() < n.checked_mul(20)? {
         return None;
     }
     let mut counts = HashMap::with_capacity(n);
+    let mut sizes = HashMap::with_capacity(n);
     for i in 0..n {
-        let o = i * 12;
-        counts.insert(
-            u64::from_le_bytes(rows[o..o + 8].try_into().ok()?),
-            u32::from_le_bytes(rows[o + 8..o + 12].try_into().ok()?),
-        );
+        let o = i * 20;
+        let h = u64::from_le_bytes(rows[o..o + 8].try_into().ok()?);
+        counts.insert(h, u32::from_le_bytes(rows[o + 8..o + 12].try_into().ok()?));
+        sizes.insert(h, u64::from_le_bytes(rows[o + 12..o + 20].try_into().ok()?));
     }
-    Some(GameIndex { counts })
+    Some(GameIndex { counts, sizes })
 }
 
 /// Disk cache: `[fingerprint u64]` + the wire body. The fingerprint gates reuse
@@ -294,7 +317,9 @@ fn patch_signature(game_dir: &Path) -> String {
 }
 
 fn cloud_index_url(sig: &str) -> String {
-    format!("{CLOUD_INDEX_BASE}/i/{sig}")
+    // `v2-` scopes the key to the size-carrying format so a new client never
+    // fetches (and misparses) an old count-only blob a prior version published.
+    format!("{CLOUD_INDEX_BASE}/i/v2-{sig}")
 }
 
 /// Operator upload token, present only on the publisher's machine (never shipped
@@ -424,6 +449,46 @@ pub fn overlay_size_floor(mod_path: &Path, game_dir: &Path) -> u64 {
     total
 }
 
+/// A mod overlay can't finish inside the game-suspend window if it either
+/// targets a huge base WAD (`>= HEAVY_OVERLAY_FLOOR_BYTES` — any SR map) OR
+/// carries a LOOSE asset whose path is present in many game WADs (a game-wide
+/// override — e.g. a gold/UI mod's `FloatingText` icon — that makes cslol
+/// rebuild most of the game via spread rather than size). Both force a
+/// near-full-game rebuild that aborts the whole injection.
+const HEAVY_OVERLAY_FLOOR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// A loose entry present in more game WADs than this is a game-wide shared
+/// asset — well above the scoper's `MAX_ENTRY_WADS` (5), so only true globals
+/// (100s of WADs) trip it, never a legit multi-champ/locale pack.
+const SPREAD_WAD_THRESHOLD: u32 = 50;
+
+/// If this mod would force a near-full-game overlay rebuild, a short user-facing
+/// reason to skip it (inject the rest instead); else `None`. Reads only the mod
+/// zip's central directory + the cached game index — no extraction.
+pub fn heavy_skip_reason(mod_path: &Path, game_dir: &Path) -> Option<String> {
+    let floor = overlay_size_floor(mod_path, game_dir);
+    if floor >= HEAVY_OVERLAY_FLOOR_BYTES {
+        return Some(format!("it rebuilds ~{:.1} GB of game files", floor as f64 / 1.073_741_824e9));
+    }
+    // Spread check: a loose asset (not a packed `.wad.client` member) whose path
+    // lands in many game WADs. Packed members are handled by the scoper instead.
+    let idx = build_game_index_cached(game_dir)?;
+    let file = std::fs::File::open(mod_path).ok()?;
+    let zip = zip::ZipArchive::new(std::io::BufReader::new(file)).ok()?;
+    for name in zip.file_names() {
+        let lower = name.to_lowercase();
+        // Loose file inside a WAD member: `WAD/<member>.wad.client/<asset path>`.
+        let Some(pos) = lower.find(".wad.client/") else { continue };
+        let entry_path = &name[pos + ".wad.client/".len()..];
+        if entry_path.is_empty() {
+            continue;
+        }
+        if idx.count(path_hash(entry_path)) > SPREAD_WAD_THRESHOLD {
+            return Some("it overrides a game-wide shared asset".to_string());
+        }
+    }
+    None
+}
+
 /// Best-effort background pre-warm at startup so the ~11s first build never
 /// lands inside an injection's suspend window. No-op if the game dir isn't
 /// resolvable yet (League closed) — the champ-select sweep builds it then.
@@ -482,11 +547,18 @@ fn scope_dir(dir: &Path, index: &GameIndex) -> (u32, Vec<String>) {
             if rel == "hashed_files.json" {
                 continue;
             }
-            let n = index.count(path_hash(&rel));
-            if n <= MAX_ENTRY_WADS {
+            let h = path_hash(&rel);
+            let n = index.count(h);
+            let size_sum = index.size_sum(h);
+            // Drop a shared entry if it's in many WADs (count) OR if the WADs it
+            // pulls in are collectively huge (size). The size test catches the
+            // count-blind case: an asset in just 5 WADs that happen to include
+            // Map11/Map12/Global (multi-GB each) forces a 5 GB rebuild while
+            // passing the count rule. Own-champion content lives in ~1 small WAD.
+            if n <= MAX_ENTRY_WADS && size_sum <= ENTRY_SIZE_DROP_BYTES {
                 *kept += 1;
             } else {
-                dropped.push(format!("{rel} ({n} wads)"));
+                dropped.push(format!("{rel} ({n} wads, {} MB)", size_sum / (1024 * 1024)));
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -655,14 +727,26 @@ pub fn sweep_imported_mods(app: Option<&AppHandle>) {
 
 fn sweep_inner(app: Option<&AppHandle>) {
     let mods_root = paths::mods_dir();
+    // Scope EVERY category except announcers — any packed OR loose-file mod that
+    // carries globally-shared asset paths (a map, a UI/gold mod overriding a
+    // game-wide `FloatingText` asset, a vfx pack) forces the same full-game
+    // overlay rebuild, so drop those shared entries uniformly. Announcers get the
+    // retarget path instead. Scanning the dir list covers future categories too.
     let mut scoped = Vec::new();
-    collect_mod_archives(&mods_root.join("skins"), &mut scoped);
-    // Custom maps are packed WAD mods too, and a map that carries globally-shared
-    // assets forces the same full-game overlay rebuild a skin would — scope them
-    // identically (drop entries present in many game WADs) so they inject fast.
-    collect_mod_archives(&mods_root.join("maps"), &mut scoped);
     let mut announcers = Vec::new();
-    collect_mod_archives(&mods_root.join("announcers"), &mut announcers);
+    if let Ok(entries) = std::fs::read_dir(&mods_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            if entry.file_name().to_string_lossy().eq_ignore_ascii_case("announcers") {
+                collect_mod_archives(&path, &mut announcers);
+            } else {
+                collect_mod_archives(&path, &mut scoped);
+            }
+        }
+    }
 
     let mut state = load_state();
     let pending: Vec<(PathBuf, bool)> = scoped
@@ -835,7 +919,7 @@ mod tests {
         counts.insert(path_hash("assets/characters/jhin/skins/base/jhin.skn"), 2u32);
         counts.insert(path_hash("assets/characters/akali/skins/base/akali.skn"), 1u32);
         counts.insert(path_hash("assets/shared/particles/defaultfalloff.tex"), 226u32);
-        let idx = GameIndex { counts };
+        let idx = GameIndex { counts, sizes: HashMap::new() };
 
         let (kept, dropped) = scope_dir(&root, &idx);
         assert_eq!(kept, 3, "own + cross-champion + brand-new entries all survive");
@@ -843,6 +927,37 @@ mod tests {
         assert!(dropped[0].contains("defaultfalloff.tex"));
         assert!(root.join("assets/characters/akali/skins/base/akali.skn").exists(), "v1 regression: multi-champ pack content must survive");
         assert!(!root.join("assets/shared/particles/defaultfalloff.tex").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scope_dir_drops_count_low_entries_that_pull_in_huge_wads() {
+        // The Talon Black Moon regression: an entry in only 5 WADs (passes the
+        // count rule) but those WADs total multi-GB (Map11 etc.) — must drop.
+        let root = std::env::temp_dir().join("chud_mod_scope_size_test");
+        let _ = std::fs::remove_dir_all(&root);
+        for rel in ["assets/characters/talon/skins/skin05/talon.skn", "assets/shared/moon_particle.tex"] {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"x").unwrap();
+        }
+        let own = path_hash("assets/characters/talon/skins/skin05/talon.skn");
+        let shared = path_hash("assets/shared/moon_particle.tex");
+        let mut counts = HashMap::new();
+        counts.insert(own, 1u32); // own content, 1 small WAD
+        counts.insert(shared, 5u32); // count 5 — passes MAX_ENTRY_WADS
+        let mut sizes = HashMap::new();
+        sizes.insert(own, 40 * 1024 * 1024u64); // ~40 MB Talon WAD
+        sizes.insert(shared, 5 * 1024 * 1024 * 1024u64); // ~5 GB (Map11+Map12+Global+...)
+        let idx = GameIndex { counts, sizes };
+
+        let (kept, dropped) = scope_dir(&root, &idx);
+        assert_eq!(kept, 1, "own content survives");
+        assert_eq!(dropped.len(), 1, "the count-5-but-5GB shared entry is dropped");
+        assert!(dropped[0].contains("moon_particle"));
+        assert!(root.join("assets/characters/talon/skins/skin05/talon.skn").exists());
+        assert!(!root.join("assets/shared/moon_particle.tex").exists());
 
         let _ = std::fs::remove_dir_all(&root);
     }
