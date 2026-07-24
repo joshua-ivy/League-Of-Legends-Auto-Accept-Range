@@ -490,8 +490,14 @@ async fn champ_select_entry(
 
 /// Pure predicate, unit-testable without an LCU connection: only worth
 /// fetching the session if we're in ChampSelect and haven't recorded a lock.
-fn should_attempt_late_lock_bootstrap(phase: Option<&str>, own_champion_locked: bool) -> bool {
-    phase == Some("ChampSelect") && !own_champion_locked
+fn should_attempt_late_lock_bootstrap(phase: Option<&str>, _own_champion_locked: bool) -> bool {
+    // Poll the champ-select session every tick through BOTH champ select and
+    // finalization, whether or not a champ is already locked. Before the first
+    // lock this bootstraps a pre-existing/late lock; AFTER a lock it is the only
+    // thing that catches a mid-select champion SWAP (ARAM bench) — `process_session`'s
+    // exchange path only fires when it's actually re-run, and the WS Session delta
+    // that used to be the sole post-lock trigger is missed on slower clients.
+    matches!(phase, Some("ChampSelect") | Some("FINALIZATION"))
 }
 
 /// If the app starts (or the LCU reconnects) while champ select is already
@@ -732,7 +738,8 @@ mod tests {
     #[test]
     fn late_lock_bootstrap_only_attempted_in_champ_select_while_unlocked() {
         assert!(should_attempt_late_lock_bootstrap(Some("ChampSelect"), false));
-        assert!(!should_attempt_late_lock_bootstrap(Some("ChampSelect"), true), "already locked - no-op");
+        assert!(should_attempt_late_lock_bootstrap(Some("ChampSelect"), true), "keeps polling after lock to catch a swap");
+        assert!(should_attempt_late_lock_bootstrap(Some("FINALIZATION"), true), "polls through finalization (ARAM bench window)");
         assert!(!should_attempt_late_lock_bootstrap(Some("InProgress"), false), "wrong phase - no-op");
         assert!(!should_attempt_late_lock_bootstrap(None, false), "no phase yet - no-op");
     }
